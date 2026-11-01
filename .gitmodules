@@ -1,0 +1,11 @@
+[submodule "third_party/pyAgxArm"]
+	path = third_party/pyAgxArm
+	url = https://github.com/agilexrobotics/pyAgxArm.git
+[submodule "ws/src/handeye_calibration_ros"]
+	path = ws/src/handeye_calibration_ros
+	url = https://github.com/agilexrobotics/handeye_calibration_ros.git
+	branch = humble
+[submodule "ws/src/agx_arm_ros"]
+	path = ws/src/agx_arm_ros
+	url = https://github.com/agilexrobotics/agx_arm_ros.git
+	branch = ros2
