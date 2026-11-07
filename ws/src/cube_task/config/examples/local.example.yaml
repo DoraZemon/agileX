@@ -1,0 +1,21 @@
+# 复制成 config/site/local.yaml，按现场问到 / 量到的值修改。不知道的行删掉，用 default.yaml 的默认值。
+# local.yaml 最后合并，会覆盖 poses.yaml / colors.yaml / tasks.yaml 里的同名键：
+# 不要在这里写 zones、robot.poses、perception.roi.pick_polygon、perception.table.expected_z
+# （这些由 teach_poses 写进 poses.yaml）。说明见 docs/配置说明.md。
+robot:
+  can_channel: can0            # CAN 口名（bash scripts/can_up.sh 显示的名字）
+  speed_percent: 30            # 默认速度 %；空跑和整轮通过后再提高
+  tcp_offset: [0.0, 0.0, 0.140, 0.0, 0.0, 0.0]   # 法兰 -> 闭合指尖中心 [x y z roll pitch yaw]，m / rad
+  gripper:
+    max_width: 0.070           # 标准夹爪 0.070；100 mm 新夹爪 0.100
+camera:
+  mount: eye_to_hand           # 固定支架 eye_to_hand；腕部 eye_in_hand。要和外参文件一致
+  extrinsics_file: config/site/extrinsics.yaml
+  ros:
+    color_topic: /camera/color/image_raw
+    depth_topic: /camera/depth/image_raw
+    info_topic: /camera/color/camera_info
+    depth_registered: true     # 驱动已把深度对齐到彩色（Orbbec depth_registration:=true）
+    depth_scale: 0.001         # 16 位深度的单位 -> m（毫米）
+perception:
+  l1_block_size: 0.035         # L1 方块边长 (m)，量实物

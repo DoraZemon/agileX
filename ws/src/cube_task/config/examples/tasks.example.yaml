@@ -1,0 +1,32 @@
+# 复制成 config/site/tasks.yaml，拿到官方类别表后修改。
+# class_to_zone 里的区域名要和 teach_poses 示教的区域名（config/site/poses.yaml 的 zones）一致。
+# 不在 class_to_zone 里的类别永远不会被抓。说明见 docs/配置说明.md 第 3.6 节。
+tasks:
+  L1:
+    labels: [red, green, blue]
+    class_to_zone:
+      red: zone_red
+      green: zone_green
+      blue: zone_blue
+    order: []                  # 裁判规定顺序时例如 [blue, red, green]；比赛时一般用 run_task --targets
+  L2:
+    classifier: knn            # color | knn | onnx | onnx+knn（docs/yolo.md）
+    labels: [apple, banana, orange, carrot, eggplant, corn]
+    class_to_zone:
+      apple: fruit_bin
+      banana: fruit_bin
+      orange: fruit_bin
+      carrot: veg_bin
+      eggplant: veg_bin
+      corn: veg_bin
+  L3:
+    classifier: knn
+    labels: [apple, banana, orange, carrot, eggplant, corn]
+    instructions_file: ''      # 一行一条指令的 UTF-8 文件；比赛时一般用 run_task --instructions-file
+    label_aliases:             # 常见果蔬的中文名已内置，这里只补官方的叫法
+      apple: [苹果]
+      banana: [香蕉]
+    zone_aliases:
+      fruit_bin: [水果盒, 水果框, 蓝色托盘]
+      veg_bin: [蔬菜盒, 蔬菜框, 绿色托盘]
+    left_axis: [0.0, 1.0]      # 指令里的“左边” = 基座 +y；现场确认是从谁的视角看

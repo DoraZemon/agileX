@@ -1,0 +1,19 @@
+# config/site/poses.yaml 的格式。正常由 teach_poses 写（拖动示教），只有工具用不了时才照这个手写。
+# 坐标都在基座坐标系（x 向前、y 向左、z 向上），单位 m / rad。这里的数值是仿真场景的例子。
+robot:
+  poses:
+    # 观察位的 6 个关节角 (rad)。eye_to_hand：臂停在不挡相机视野的地方；eye_in_hand：相机看到整个取物区。
+    observe_joints: [1.1, 0.3, -0.3, 0.0, 0.0, 0.0]
+zones:
+  zone_red:   {center: [0.21, 0.29, 0.0], size: [0.10, 0.10], yaw: 0.0, wall_height: 0.0}
+  zone_green: {center: [0.10, 0.29, 0.0], size: [0.10, 0.10], yaw: 0.0, wall_height: 0.0}
+  zone_blue:  {center: [0.16, -0.29, 0.0], size: [0.10, 0.10], yaw: 0.0, wall_height: 0.0}
+  fruit_bin:  {center: [0.19, 0.315, 0.0], size: [0.14, 0.14], yaw: 0.0, wall_height: 0.05}
+  veg_bin:    {center: [0.19, -0.315, 0.0], size: [0.14, 0.14], yaw: 0.0, wall_height: 0.05}
+perception:
+  roi:
+    # 取物区：桌面上放物体的范围，按顺序的角点 [x, y]。不要包含放置区域。
+    pick_polygon: [[0.15, -0.22], [0.45, -0.22], [0.45, 0.22], [0.15, 0.22]]
+  table:
+    # 桌面在基座坐标系里的高度（基座装在桌面上时约为 0）。也是抓取高度和安全检查桌面高度的下限
+    expected_z: 0.0

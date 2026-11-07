@@ -1,0 +1,975 @@
+"""
+Competition runner for the L1 / L2 sorting rounds and the L3 instruction round.
+
+Flow: self check (a failure refuses a real run) -> operator keys active, L3
+instructions parsed -> refuse when the gripper holds an object -> straight up
+when the TCP starts below the transit height -> observe pose + open gripper ->
+eye_in_hand real runs: pick area visible from the observe pose -> operator start
+(Enter typed before the prompt does not count) -> timed loop of observe / select
+/ plan / pick-place -> observe pose at the end. A fault stops the run at once with
+no further motion; the runner never restarts or resumes by itself (one
+referee-approved restart per round is a human decision). Camera or perception
+failures are retried until the deadline and do not count as 'nothing to pick'.
+Poses are base-frame 4x4 TCP poses (m, rad); time is the injected Clock (s).
+"""
+from __future__ import annotations
+
+import logging
+import math
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+
+from ..core.transforms import pose6_to_T
+from ..core.types import Detection, PerceptionResult, PickResult, TaskReport
+from ..core.zones import parse_zones
+from ..perception.grasp import (expected_table_z, GraspPlanner, PlacePlanner, detection_table_z,
+                                held_offset_of, max_gripper_width, table_floor_z, table_z_warning,
+                                transit_height)
+from .instruction import COUNT_ALL, parse_instruction
+from .operator import Operator
+from .selection import is_blacklisted, select_target
+from .selfcheck import observe_tcp_pose, self_check
+from .skills import PickPlaceSkill, is_fault_motion_error
+
+_LOG = logging.getLogger('cube_task.task.runner')
+
+#: grasp-plan reasons that may come from one bad frame: blacklist only after this
+#: many separate observations gave an infeasible plan.
+REMEASURE_REASONS = ('too_wide', 'missing_geometry', 'bad_geometry')
+INFEASIBLE_OBSERVATIONS = 2
+#: a failed grasp may push the object: an unmatched detection with the same label
+#: within this distance (m) of a failed attempt record continues that record.
+PUSHED_MATCH_DIST = 0.10
+#: after this many observation failures in a row, wait FAIL_BACKOFF_S between tries.
+FAIL_BACKOFF_AFTER = 5
+FAIL_BACKOFF_S = 2.0
+#: at the start a gripper wider than empty_width and narrower than max_width minus
+#: this (m) may hold an object: close it by PROBE_CLOSE and see whether it stops.
+HOLD_OPEN_MARGIN = 0.01
+PROBE_CLOSE = 0.008
+PROBE_TOL = 0.003
+#: eye_in_hand real runs: fresh frames tried for the pick-area check at the observe pose.
+VIEW_CHECK_TRIES = 2
+
+
+class _NullLogger:
+    dir = ''
+
+    def event(self, kind: str, **fields: Any) -> None:
+        pass
+
+    def save_image(self, name: str, bgr: Any) -> None:
+        return None
+
+    def save_json(self, name: str, obj: Any) -> None:
+        return None
+
+
+def _xy(det: Detection) -> Tuple[float, float]:
+    return float(det.center_base[0]), float(det.center_base[1])
+
+
+def _has_xy(det: Detection) -> bool:
+    c = det.center_base
+    return (c is not None and len(c) >= 2 and math.isfinite(float(c[0]))
+            and math.isfinite(float(c[1])))
+
+
+def _footprint(det: Detection) -> Optional[float]:
+    """Largest horizontal extent of a detection (m), None when unknown."""
+    vals = [float(v) for v in (det.length, det.width) if v is not None and math.isfinite(float(v))]
+    return max(vals) if vals and max(vals) > 0.0 else None
+
+
+def pick_summary(r: PickResult) -> Dict[str, Any]:
+    """Return a JSON-friendly summary of a PickResult (steps omitted)."""
+    return {'ok': r.ok, 'stage': r.stage, 'error': r.error, 'label': r.label, 'zone': r.zone,
+            'duration': round(float(r.duration), 3), 'grasp_width': r.grasp_width,
+            'fault': bool(r.detail.get('fault', False)),
+            'recovery': r.detail.get('recovery', '')}
+
+
+class TaskRunner:
+    """
+    Run one timed round. See the module docstring and docs/CONTRACTS.md.
+
+    targets: label list overriding tasks.<T>.order (only these labels are
+    picked, first available label first). instructions: L3 strings (default:
+    lines of tasks.L3.instructions_file). mode: 'real' | 'sim' (default from
+    robot.backend).
+    """
+
+    def __init__(self, cfg, task: str, arm, camera, perception, clock, logger,
+                 operator: Optional[Operator] = None, dry_run: bool = False,
+                 extrinsics=None, targets: Optional[Sequence[str]] = None,
+                 instructions: Optional[Sequence[str]] = None, mode: Optional[str] = None):
+        self.cfg = cfg
+        self.task = str(task)
+        self.arm = arm
+        self.camera = camera
+        self.perception = perception
+        self.clock = clock
+        self.logger = logger if logger is not None else _NullLogger()
+        self.operator = operator if operator is not None else Operator(enabled=False)
+        self.dry_run = bool(dry_run)
+        self._ext_arg = extrinsics
+        self.ext = None
+        self.mode = mode or ('sim' if cfg.get('robot.backend', '') == 'sim' else 'real')
+        t = 'tasks.%s.' % self.task
+        self.labels = [str(x) for x in (cfg.get(t + 'labels', []) or [])]
+        self.class_to_zone = dict(cfg.get(t + 'class_to_zone', {}) or {})
+        self.order = [str(x) for x in (targets if targets else (cfg.get(t + 'order', []) or []))]
+        tl = cfg.get(t + 'time_limit_s', None)
+        if tl is None or not float(tl) > 0:
+            raise ValueError('%stime_limit_s must be > 0, got %r' % (t, tl))
+        self.time_limit = float(tl)
+        self.instructions = self._load_instructions(instructions)
+        if self.task == 'L3':
+            self.required = len(self.instructions)
+        else:
+            self.required = int(cfg.get(t + 'required', 0) or 0)
+        r = 'runner.'
+        self.strategy = str(cfg.get(r + 'selection', 'nearest'))
+        self.max_attempts = int(cfg.get(r + 'max_attempts_per_object', 3))
+        mf = cfg.get(r + 'max_failures_per_label', None)
+        self.max_label_failures = 2 * self.max_attempts if mf is None else int(mf)
+        self.max_empty = int(cfg.get(r + 'max_empty_observations', 4))
+        self.min_time = float(cfg.get(r + 'min_time_for_pick_s', 12.0))
+        self.retry_s = float(cfg.get(r + 'observe_retry_s', 0.5))
+        self.return_home = bool(cfg.get(r + 'return_home_at_end', True))
+        self.match_dist = float(cfg.get('perception.tracking.match_dist_m', 0.03))
+        self.n_avg = int(cfg.get('camera.frames_to_average', 3))
+        self.settle_s = float(cfg.get('camera.settle_s', 0.4))
+        self.frame_timeout = float(cfg.get('camera.frame_timeout_s', 2.0))
+        self.max_frame_age = float(cfg.get('camera.max_frame_age_s', 1.0))
+        self.mount = str(cfg.get('camera.mount', 'eye_to_hand'))
+        self.left_axis = np.asarray(cfg.get('tasks.L3.left_axis', [0.0, 1.0]), dtype=float)[:2]
+        self.save_images = bool(cfg.get('logging.save_images', True)) and bool(
+            cfg.get('logging.image_every_observation', True))
+        tcp = cfg.get('robot.tcp_offset', None)
+        if tcp is None or len(tcp) != 6:
+            raise ValueError('robot.tcp_offset must be [x y z roll pitch yaw], got %r' % (tcp,))
+        self.T_flange_tcp = pose6_to_T(tcp)
+        self.start_on_enter = bool(cfg.get('runner.start_on_enter', True))
+        self.zones = parse_zones(cfg)
+        self.planner = GraspPlanner(cfg, self.task)
+        self.placer = PlacePlanner(cfg)
+        self.max_width = max_gripper_width(cfg)
+        self.skill = PickPlaceSkill(cfg, arm, clock, self.logger)
+        self.expected_table_z = expected_table_z(cfg)
+        self._tracks: List[Dict[str, Any]] = []
+        self._label_failures: Dict[str, int] = {}
+        #: zone name -> (x, y, footprint, height) of the objects released into it
+        self._placed: Dict[str, List[Tuple[float, float, float, float]]] = {}
+        self._specs: Optional[List[Tuple[str, Any]]] = None
+        self._fail_streak = 0
+        self._last_obs_failure = ''
+        self._table_warned = False
+        self._at_observe = False
+        self._t_arrived: Optional[float] = None
+        self._last_stamp: Optional[float] = None
+        self._obs = 0
+        self._observe_failures = 0
+        self._deadline = math.inf
+        self.fault_detail = ''
+
+    # ------------------------------------------------------------------ public
+    def run(self) -> TaskReport:
+        """Run the round and return the report (never raises for robot failures)."""
+        rep = TaskReport(task=self.task, ok=False, required=self.required,
+                         time_limit=self.time_limit, log_dir=str(self.logger.dir))
+        t0 = None
+        try:
+            if self._prepare(rep):
+                t0 = self.clock.now()
+                self._deadline = t0 + self.time_limit
+                self._event('start', t0=t0, deadline=self._deadline, dry_run=self.dry_run,
+                            required=self.required, order=self.order)
+                if self.task == 'L3':
+                    self._loop_instructions(rep)
+                else:
+                    self._loop_sort(rep)
+                rep.elapsed = self.clock.now() - t0
+                if rep.stop_reason != 'done' and self._fail_streak > 0 and not self.fault_detail:
+                    # The round ended while the camera / perception kept failing.
+                    self.fault_detail = 'observation failures: %s (%d in a row)' % (
+                        self._last_obs_failure, self._fail_streak)
+                if rep.stop_reason not in ('fault', 'aborted') and self.return_home:
+                    m = self._go_observe()
+                    if not m[0]:
+                        _LOG.warning('could not return to the observe pose: %s', m[1])
+        except Exception as e:  # noqa: B902 - a bug must stop the arm, not crash silently
+            _LOG.exception('runner crashed')
+            rep.stop_reason = 'fault'
+            self.fault_detail = 'exception: %s' % e
+            if t0 is not None:
+                rep.elapsed = self.clock.now() - t0
+            try:
+                self.arm.stop()
+            except Exception:  # noqa: B902
+                _LOG.exception('arm.stop() raised')
+        rep.ok = (rep.stop_reason == 'done' and rep.placed >= rep.required
+                  and rep.elapsed <= self.time_limit and not self.dry_run)
+        summary = {'task': rep.task, 'ok': rep.ok, 'placed': rep.placed,
+                   'required': rep.required, 'attempts': rep.attempts,
+                   'elapsed': round(rep.elapsed, 3), 'time_limit': rep.time_limit,
+                   'stop_reason': rep.stop_reason, 'fault_detail': self.fault_detail,
+                   'dry_run': self.dry_run, 'picks': [pick_summary(p) for p in rep.picks]}
+        self._event('report', **summary)
+        try:
+            self.logger.save_json('report.json', summary)
+        except Exception:  # noqa: B902
+            _LOG.exception('could not save report.json')
+        _LOG.info('%s finished: %s, placed %d/%d in %.1f s', rep.task, rep.stop_reason,
+                  rep.placed, rep.required, rep.elapsed)
+        return rep
+
+    # --------------------------------------------------------------- prepare
+    def _load_instructions(self, instructions) -> List[str]:
+        if instructions is not None:
+            return [str(s).strip() for s in instructions if str(s).strip()]
+        if self.task != 'L3':
+            return []
+        p = self.cfg.path('tasks.L3.instructions_file')
+        if p is None:
+            return []
+        with open(p, 'r', encoding='utf-8') as f:
+            return [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')]
+
+    def _prepare(self, rep: TaskReport) -> bool:
+        ok, msgs = self_check(self.cfg, self.task, self.arm, self.camera, self.mode,
+                              extrinsics=self._ext_arg, clock=self.clock)
+        for m in msgs:
+            (_LOG.warning if not m.startswith('[ OK ]') else _LOG.info)('self check %s', m)
+        self._event('self_check', ok=ok, mode=self.mode, messages=msgs)
+        if not ok and self.mode == 'real':
+            return self._refuse(rep, 'self_check', 'self check failed')
+        try:
+            if self._ext_arg is not None:
+                self.ext = self._ext_arg
+            else:
+                from ..core.extrinsics import extrinsics_from_cfg
+                self.ext = extrinsics_from_cfg(self.cfg)
+        except (ImportError, ValueError) as e:
+            return self._refuse(rep, 'config', 'extrinsics: %s' % e)
+        if self.ext is None:
+            return self._refuse(rep, 'config', 'no extrinsics')
+        if self.task != 'L3' and not self.class_to_zone:
+            return self._refuse(rep, 'config', 'class_to_zone is empty')
+        if self.task == 'L3' and not self.instructions:
+            return self._refuse(rep, 'config', 'no L3 instructions')
+        if self.required <= 0:
+            return self._refuse(rep, 'config', 'required must be > 0')
+        self.arm.set_abort_event(self.operator.abort_event)
+        if hasattr(self.operator, 'set_estop_callback'):
+            self.operator.set_estop_callback(self.arm.emergency_stop)
+        if hasattr(self.operator, 'start'):
+            self.operator.start()               # p / space / e work from the first motion on
+        if self.task == 'L3':
+            self._parse_instructions()          # no parser / LLM call after the timer starts
+            if self._aborted():
+                return self._refuse(rep, 'aborted', 'aborted before start')
+        if not self._healthy():
+            return self._refuse(rep, 'fault', 'arm not healthy before start')
+        held = self._holding_at_start()
+        if held is not None:
+            return self._refuse(rep, held[0], held[1])
+        ok_up, err = self._lift_if_low()
+        if not ok_up:
+            return self._refuse(rep, 'aborted' if err == 'aborted' else 'fault',
+                                'cannot go up to the transit height: %s' % err)
+        ok_move, err = self._go_observe()
+        if not ok_move:
+            return self._refuse(rep, 'aborted' if err == 'aborted' else 'fault',
+                                'cannot reach the observe pose: %s' % err)
+        g = self.arm.gripper(self.max_width, wait=True)
+        if g.error and g.error != 'timeout':
+            if g.error == 'aborted' or self._aborted():
+                return self._refuse(rep, 'aborted', 'aborted before start')
+            return self._refuse(rep, 'fault', 'gripper open failed: %s %s' % (g.error, g.detail))
+        if self.mode == 'real' and self.mount == 'eye_in_hand':
+            # The self check could not test the wrist camera's view away from here.
+            ok_view, msg = self._check_view_at_observe()
+            if self._aborted():
+                return self._refuse(rep, 'aborted', 'aborted before start')
+            if not ok_view:
+                return self._refuse(rep, 'fault',
+                                    'pick area not visible from the observe pose: ' + msg)
+        if self.start_on_enter:
+            # Only an Enter typed after the prompt starts the clock.
+            started = self.operator.wait_start(discard_earlier=True)
+        else:
+            started = not self._aborted()
+        if not started:
+            return self._refuse(rep, 'aborted', 'aborted before start')
+        return True
+
+    def _parse_instructions(self) -> None:
+        """Parse every L3 instruction before the start (rules, or the LLM when enabled)."""
+        from .instruction import InstructionSpec
+        self._specs = []
+        for text in self.instructions:
+            try:
+                spec = parse_instruction(text, self.cfg, self.labels, self.zones)
+            except Exception as e:  # noqa: B902 - a parser bug fails this instruction only
+                _LOG.exception('parse_instruction raised')
+                spec = InstructionSpec(raw=text, ok=False, reason='parse error: %s' % e)
+            self._specs.append((text, spec))
+            (_LOG.info if spec.ok else _LOG.warning)('instruction %r -> %s', text, spec.summary())
+        self._event('instructions_parsed', specs=[sp.summary() for _t, sp in self._specs])
+
+    def _fresh_width(self) -> Optional[float]:
+        """Return the measured gripper width (m) when fresh, else None."""
+        try:
+            s = self.arm.gripper_width()
+        except Exception:  # noqa: B902
+            _LOG.exception('gripper_width() raised')
+            return None
+        if s is None or s.value is None:
+            return None
+        if self.clock.now() - float(s.stamp) > self.skill.feedback_max_age:
+            return None
+        w = float(s.value)
+        return w if math.isfinite(w) else None
+
+    def _holding_at_start(self) -> Optional[Tuple[str, str]]:
+        """
+        Return (stop reason, detail) when the gripper holds an object, else None.
+
+        After a fault or an abort while holding, the observe move would carry the
+        object and the gripper would open there. A width between empty_width and
+        max_width - HOLD_OPEN_MARGIN is either an object or an approach opening
+        left by an abort, so the gripper closes by PROBE_CLOSE: an empty one
+        follows, one on an object stops. Only the fingers move.
+        """
+        w = self._fresh_width()
+        if w is None or not self.skill.empty_width < w < self.max_width - HOLD_OPEN_MARGIN:
+            return None
+        target = max(0.0, w - PROBE_CLOSE)
+        g = self.arm.gripper(target, force=self.skill.force, wait=True)
+        w2 = g.width if (g.width is not None and math.isfinite(float(g.width))) else None
+        if w2 is None:
+            w2 = self._fresh_width()
+        self._event('gripper_probe', width=round(w, 4), target=round(target, 4),
+                    result=None if w2 is None else round(w2, 4), error=g.error)
+        if g.error == 'aborted' or self._aborted():
+            return 'aborted', 'aborted before start'
+        if g.error and g.error != 'timeout':
+            return 'fault', 'gripper check failed: %s %s' % (g.error, g.detail)
+        if w2 is None:
+            return 'fault', 'no gripper feedback after the gripper check'
+        if w2 > target + PROBE_TOL:
+            return 'config', ('gripper is closed on something (%.3f m): remove the object, '
+                              'then restart' % w2)
+        return None
+
+    def _lift_if_low(self) -> Tuple[bool, str]:
+        """
+        Go straight up to the transit height when the TCP starts below it.
+
+        A restart after a fault can begin low beside objects or inside a bin,
+        where the joint-space move to the observe pose could sweep through them.
+        Returns (ok, error); a lift that SafeArm refuses (nothing moved) falls
+        back to the observe move as before.
+        """
+        try:
+            s = self.arm.get_tcp_pose()
+        except Exception:  # noqa: B902
+            _LOG.exception('get_tcp_pose() raised')
+            return True, ''
+        if s is None or s.value is None:
+            return True, ''
+        T = np.asarray(s.value, dtype=float)
+        if T.shape != (4, 4) or not np.all(np.isfinite(T)):
+            return True, ''
+        table = 0.0 if self.expected_table_z is None else self.expected_table_z
+        try:
+            tz = transit_height(self.cfg, list(self.zones.values()), table)
+        except ValueError:
+            return True, ''
+        if float(T[2, 3]) >= tz - 0.005:
+            return True, ''
+        T_up = T.copy()
+        T_up[2, 3] = tz
+        from .reach import reach_adjust
+        T2, tilt, why = reach_adjust(self.arm, T_up)
+        if T2 is None:
+            _LOG.warning('TCP z %.3f m is below the transit height %.3f m but the straight lift '
+                         'is not possible (%s)', float(T[2, 3]), tz, why)
+            self._event('start_lift', ok=False, error='rejected', reason=why)
+            return True, ''
+        m = self.arm.move_tcp(T2, linear=True)
+        self._event('start_lift', ok=m.ok, error=m.error, from_z=round(float(T[2, 3]), 4),
+                    to_z=round(tz, 4), tilt_deg=round(tilt, 1))
+        if m.ok or m.error in ('rejected', 'unreachable'):
+            return True, ''
+        return False, m.error or 'unknown'
+
+    def _check_view_at_observe(self) -> Tuple[bool, str]:
+        """Eye-in-hand: check the pick area on a fresh frame at the observe pose."""
+        from .selfcheck import check_pick_area
+        settle_until = float(self._t_arrived) + self.settle_s
+        wait = settle_until - self.clock.now()
+        if wait > 0:
+            self.clock.sleep(wait)
+        ok, msg = False, ''
+        for _try in range(VIEW_CHECK_TRIES):        # one bad frame does not refuse the run
+            try:
+                ok, msg = check_pick_area(self.cfg, self.camera, self.ext, self.arm,
+                                          newer_than=settle_until)
+            except Exception as e:  # noqa: B902 - a failed check refuses the run
+                _LOG.exception('check_pick_area raised')
+                ok, msg = False, 'check raised: %s' % e
+            if ok or self._aborted():
+                break
+        (_LOG.info if ok else _LOG.error)('view at the observe pose: %s', msg)
+        self._event('view_check', ok=ok, message=msg)
+        return ok, msg
+
+    def _refuse(self, rep: TaskReport, reason: str, detail: str) -> bool:
+        rep.stop_reason = reason
+        self.fault_detail = detail
+        _LOG.error('run not started: %s (%s)', reason, detail)
+        self._event('refused', reason=reason, detail=detail)
+        return False
+
+    # ---------------------------------------------------------------- helpers
+    def _event(self, kind: str, **fields: Any) -> None:
+        try:
+            self.logger.event(kind, **fields)
+        except Exception:  # noqa: B902 - logging never stops the run
+            _LOG.exception('logger.event failed')
+
+    def _healthy(self) -> bool:
+        try:
+            h = self.arm.health()
+        except Exception:  # noqa: B902
+            _LOG.exception('arm.health() raised')
+            return False
+        if h is None or not h.ok:
+            self.fault_detail = 'arm unhealthy: %s' % (getattr(h, 'reason', 'no status'))
+            return False
+        return True
+
+    def _aborted(self) -> bool:
+        return self.operator.abort_event.is_set() or self.arm.abort_event.is_set()
+
+    def _remaining(self) -> float:
+        return self._deadline - self.clock.now()
+
+    def _stop_check(self) -> Optional[str]:
+        """Return a stop reason that applies before starting new work, else None."""
+        if self._aborted():
+            return 'aborted'
+        if self._remaining() < self.min_time:
+            return 'timeout'
+        if not self._healthy():
+            return 'fault'
+        return None
+
+    def _go_observe(self) -> Tuple[bool, str]:
+        """Move to the observe pose (taught joints, else observe_tcp); (ok, error)."""
+        qj = self.cfg.get('robot.poses.observe_joints', None)
+        if qj is not None:
+            m = self.arm.move_joints([float(v) for v in qj])
+        else:
+            T = observe_tcp_pose(self.cfg)
+            if T is None:
+                return False, 'no observe pose configured'
+            from .reach import reach_adjust
+            T2, _tilt, why = reach_adjust(self.arm, T)
+            if T2 is None:
+                return False, 'rejected'
+            m = self.arm.move_tcp(T2, linear=False)
+        self._event('observe_move', ok=m.ok, error=m.error, duration=round(m.duration, 3))
+        if m.ok:
+            self._at_observe = True
+            self._t_arrived = self.clock.now()
+            return True, ''
+        self._at_observe = False
+        return False, m.error or 'unknown'
+
+    # ------------------------------------------------------------ observation
+    def _observe(self) -> Tuple[str, Optional[PerceptionResult], Any]:
+        """
+        Park / observe, capture and run perception.
+
+        Returns (status, result, frame) with status 'ok', 'failed' (no usable
+        frame, no flange pose, perception error or a first failed observe move;
+        the reason is in _last_obs_failure), 'fault' or 'aborted'.
+        """
+        if not self._at_observe:
+            ok, err = self._go_observe()
+            if not ok:
+                if err == 'aborted' or self._aborted():
+                    return 'aborted', None, None
+                self._observe_failures += 1
+                if is_fault_motion_error(err) or self._observe_failures >= 2:
+                    self.fault_detail = 'observe move failed: %s' % err
+                    return 'fault', None, None
+                return self._obs_failed('observe move failed: %s' % err)
+        self._observe_failures = 0
+        settle_until = float(self._t_arrived) + self.settle_s
+        wait = settle_until - self.clock.now()
+        if wait > 0:
+            self.clock.sleep(wait)
+        newer = settle_until if self._last_stamp is None else max(settle_until, self._last_stamp)
+        from ..camera.utils import capture_averaged
+        try:
+            frame = capture_averaged(self.camera, self.n_avg, newer_than=newer,
+                                     timeout=self.frame_timeout)
+        except Exception as e:  # noqa: B902 - camera trouble = failed observation
+            _LOG.exception('capture failed')
+            return self._obs_failed('capture error: %s' % e)
+        if frame is None:
+            return self._obs_failed('no frame')
+        now = self.clock.now()
+        if not float(frame.stamp) > newer or now - float(frame.stamp) > self.max_frame_age:
+            return self._obs_failed('stale frame', stamp=frame.stamp, now=now, newer_than=newer)
+        self._last_stamp = float(frame.stamp)
+        T_bf = None
+        if self.mount == 'eye_in_hand':
+            extra = (frame.meta or {}).get('extra') or {}
+            if frame.source == 'file' and extra.get('T_base_flange') is not None:
+                # Replay: the recorded flange pose belongs to this frame, not the sim arm.
+                T_bf = np.asarray(extra['T_base_flange'], dtype=float)
+            else:
+                s = self.arm.get_flange_pose()
+                if s is None or float(s.stamp) < float(self._t_arrived):
+                    return self._obs_failed('no flange pose at capture')
+                T_bf = np.asarray(s.value, dtype=float)
+        try:
+            from ..core.extrinsics import camera_pose_in_base
+            T_bc = camera_pose_in_base(self.ext, T_bf, self.T_flange_tcp)
+            result = self.perception.process(frame, T_bc, self.zones)
+        except Exception as e:  # noqa: B902 - a perception bug = failed observation
+            _LOG.exception('perception failed')
+            return self._obs_failed('perception error: %s' % e)
+        self._obs += 1
+        self._fail_streak = 0
+        warnings = list(result.warnings)
+        table_warning = self._update_table_z(result)
+        if table_warning:
+            warnings.append(table_warning)
+        self._event('observation', ok=True, n=self._obs, stamp=frame.stamp,
+                    detections=[d.summary() for d in result.detections],
+                    warnings=warnings)
+        return 'ok', result, frame
+
+    def _obs_failed(self, reason: str, **fields: Any) -> Tuple[str, None, None]:
+        self._fail_streak += 1
+        self._last_obs_failure = reason
+        self._event('observation', ok=False, reason=reason, failures=self._fail_streak, **fields)
+        return 'failed', None, None
+
+    def _pause_after_failure(self) -> None:
+        """Wait before the next try after a failed observation (longer after many)."""
+        dt = self.retry_s
+        if self._fail_streak >= FAIL_BACKOFF_AFTER:
+            dt = max(dt, FAIL_BACKOFF_S)
+        self._event('decision', action='observe_retry', failures=self._fail_streak,
+                    reason=self._last_obs_failure, wait=round(dt, 3))
+        self.clock.sleep(dt)
+
+    def _update_table_z(self, result: PerceptionResult) -> str:
+        """
+        Give the perceived table z to SafeArm (lower-bounded by expected_z).
+
+        Returns a warning when the perceived table differs from
+        perception.table.expected_z by more than 10 mm, else ''.
+        """
+        z = None
+        poly = self.cfg.get('perception.roi.pick_polygon', None) or []
+        if result.table is not None and result.table.frame == 'base' and len(poly) >= 3:
+            cx = float(np.mean([p[0] for p in poly]))
+            cy = float(np.mean([p[1] for p in poly]))
+            try:
+                z = result.table.z_at(cx, cy)
+            except ValueError:
+                z = None
+        if z is None:
+            zs = [detection_table_z(d) for d in result.valid_detections()]
+            zs = [v for v in zs if v is not None]
+            z = float(np.median(zs)) if zs else None
+        if z is None or not math.isfinite(z):
+            return ''
+        warning = table_z_warning(z, self.expected_table_z)
+        if warning and not self._table_warned:
+            self._table_warned = True
+            _LOG.warning('%s', warning)
+        if hasattr(self.arm, 'set_table_z'):
+            self.arm.set_table_z(table_floor_z(z, self.expected_table_z))
+        return warning
+
+    def _candidates(self, result: PerceptionResult) -> List[Detection]:
+        """Return valid, classified, mapped detections that pass the target filter."""
+        out: List[Detection] = []
+        skipped = []
+        for d in result.valid_detections():
+            zone = self.class_to_zone.get(d.label)
+            if d.label in ('', 'unknown'):
+                why = 'unknown_label'
+            elif zone is None:
+                why = 'unmapped_label'
+            elif zone not in self.zones:
+                why = 'zone_missing'
+            elif self.order and d.label not in self.order:
+                why = 'not_a_target'
+            elif not _has_xy(d):
+                why = 'no_geometry'
+            else:
+                out.append(d)
+                continue
+            skipped.append({'label': d.label, 'reason': why, 'track_id': d.track_id,
+                            'center': d.summary()['center_base']})
+        if skipped:
+            self._event('decision', action='skip', skipped=skipped)
+        return out
+
+    def _save_image(self, frame, result: Optional[PerceptionResult],
+                    chosen: Optional[Detection]) -> None:
+        if not self.save_images or frame is None:
+            return
+        base = result.debug_image if result is not None and result.debug_image is not None \
+            else frame.color
+        if base is None:
+            return
+        try:
+            import cv2
+            img = np.array(base, dtype=np.uint8, copy=True)
+            if chosen is not None:
+                x0, y0, x1, y1 = [int(v) for v in chosen.bbox]
+                cv2.rectangle(img, (x0, y0), (x1, y1), (0, 255, 255), 3)
+                cv2.putText(img, 'TARGET %s' % chosen.label, (x0, max(15, y0 - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            t_run = self.time_limit - self._remaining()
+            cv2.putText(img, '%s obs %d t=%.1fs' % (self.task, self._obs, t_run),
+                        (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            self.logger.save_image('obs_%03d.jpg' % self._obs, img)
+        except Exception:  # noqa: B902 - images are diagnostics only
+            _LOG.exception('could not save the observation image')
+
+    # --------------------------------------------------------- tracks / picks
+    def _track(self, det: Detection, others: Sequence[Detection] = ()) -> Dict[str, Any]:
+        """
+        Return the attempt record for the object at det's position (created on demand).
+
+        Matches the record within match_dist; else (a failed grasp may have pushed
+        the object) the nearest record with det's label within PUSHED_MATCH_DIST
+        whose last attempt failed and whose old position is empty in this
+        observation (others: its valid detections).
+        """
+        x, y = _xy(det)
+        best, best_d = None, self.match_dist
+        for t in self._tracks:
+            d = math.hypot(t['xy'][0] - x, t['xy'][1] - y)
+            if d <= best_d:
+                best, best_d = t, d
+        if best is None:
+            best = self._pushed_track(det, others)
+        if best is None:
+            best = {'xy': (x, y), 'label': det.label, 'attempts': 0, 'blacklisted': False,
+                    'reason': '', 'infeasible': 0, 'last_failed': False}
+            self._tracks.append(best)
+        return best
+
+    def _pushed_track(self, det: Detection,
+                      others: Sequence[Detection]) -> Optional[Dict[str, Any]]:
+        x, y = _xy(det)
+        seen = [_xy(o) for o in others if o is not det and o.label == det.label and _has_xy(o)]
+        best, best_d = None, PUSHED_MATCH_DIST
+        for t in self._tracks:
+            if t['label'] != det.label or not t.get('last_failed'):
+                continue
+            tx, ty = t['xy']
+            if any(math.hypot(tx - ox, ty - oy) <= self.match_dist for ox, oy in seen):
+                continue                        # its object is still where it was
+            d = math.hypot(tx - x, ty - y)
+            if d <= best_d:
+                best, best_d = t, d
+        if best is not None:
+            self._event('decision', action='track_moved', label=det.label,
+                        from_xy=[round(v, 4) for v in best['xy']],
+                        to_xy=[round(x, 4), round(y, 4)],
+                        attempts=best['attempts'], blacklisted=best['blacklisted'])
+        return best
+
+    def _blacklist(self, track: Dict[str, Any], reason: str) -> None:
+        track['blacklisted'] = True
+        track['reason'] = reason
+        self._event('decision', action='blacklist', label=track['label'],
+                    xy=[round(v, 4) for v in track['xy']], reason=reason,
+                    attempts=track['attempts'])
+
+    def _blacklisted_xy(self) -> List[Tuple[float, float]]:
+        return [t['xy'] for t in self._tracks if t['blacklisted']]
+
+    def _attempt(self, det: Detection, zone_name: str, rep: TaskReport,
+                 neighbors: Sequence[Detection]) -> Tuple[Optional[str], Optional[PickResult]]:
+        """Plan and execute one pick. Returns (stop_reason or None, PickResult or None)."""
+        track = self._track(det, neighbors)
+        if track['blacklisted']:
+            # A blacklisted object pushed by its last failed grasp stays blacklisted.
+            track['xy'] = _xy(det)
+            return None, None
+        track['xy'] = _xy(det)
+        gp = self.planner.plan(det)
+        if not gp.feasible:
+            if gp.reason.startswith(REMEASURE_REASONS):
+                # One bad frame can give these: measure again on the next observation.
+                track['infeasible'] = track.get('infeasible', 0) + 1
+                if track['infeasible'] < INFEASIBLE_OBSERVATIONS:
+                    self._event('decision', action='remeasure', label=det.label,
+                                reason=gp.reason, infeasible=track['infeasible'])
+                    return None, None
+            self._blacklist(track, 'grasp infeasible: %s' % gp.reason)
+            return None, None
+        tops = [float(d.top_z) for d in neighbors if d.top_z is not None
+                and math.isfinite(float(d.top_z))]
+        held = held_offset_of(gp)
+        tz = transit_height(self.cfg, list(self.zones.values()), detection_table_z(det), held,
+                            max(tops) if tops else None)
+        zone = self.zones.get(zone_name)
+        footprint = _footprint(det)
+        occupied = list(self._placed.get(zone_name, []))
+        pp = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
+                              center_first=self._center_first(zone_name))
+        if not pp.feasible:
+            self._blacklist(track, 'place infeasible: %s' % pp.reason)
+            return None, None
+        from .reach import adjust_plan_poses
+        # Checks every pose (SafeArm workspace + IK) and leans high poses outward
+        # when joint5 needs it; a pose that stays unreachable blacklists the object.
+        ok, why, tilts = adjust_plan_poses(self.arm, gp, pp)
+        if not ok and footprint is not None:
+            # The spread release position may be out of reach: try the zone center.
+            pc = self.placer.plan(zone, held, tz, occupied=occupied)
+            if pc.feasible:
+                ok, _why, tilts = adjust_plan_poses(self.arm, gp, pc)
+                if ok:
+                    pp = pc
+        if not ok:
+            self._blacklist(track, 'unreachable %s' % why)
+            return None, None
+        if any(v > 0 for v in tilts.values()):
+            self._event('decision', action='tilt', label=det.label, tilt_deg=tilts)
+        stop = self._stop_check()
+        if stop is not None:
+            return stop, None
+        track['attempts'] += 1
+        rep.attempts += 1
+        self._event('decision', action='pick', label=det.label, zone=zone_name,
+                    target=det.summary(), attempt=track['attempts'],
+                    closing_angle=round(gp.closing_angle, 4),
+                    grasp_xyz=[round(float(v), 4) for v in gp.T_grasp[:3, 3]],
+                    release_xyz=[round(float(v), 4) for v in pp.T_release[:3, 3]],
+                    transit_z=round(tz, 4), remaining=round(self._remaining(), 2))
+        res = self.skill.execute(gp, pp, dry_run=self.dry_run)
+        self._at_observe = False
+        if res.detail.get('fault') or res.detail.get('holding'):
+            # A held object that could not be put down is a fault as well.
+            self.fault_detail = 'pick %s at stage %s: %s' % (res.label, res.stage, res.error)
+            return ('aborted' if self._aborted() else 'fault'), res
+        if res.ok:
+            self._tracks.remove(track)
+            x_rel, y_rel = (float(v) for v in pp.T_release[:2, 3])
+            h = float(det.height) if det.height is not None and math.isfinite(
+                float(det.height)) else 0.0
+            self._placed.setdefault(zone_name, []).append(
+                (x_rel, y_rel, 0.0 if footprint is None else footprint, h))
+        elif self.dry_run and res.stage == 'dry_run_done':
+            self._blacklist(track, 'dry_run_visited')
+        else:
+            track['last_failed'] = True
+            self._label_failures[det.label] = self._label_failures.get(det.label, 0) + 1
+            if track['attempts'] >= self.max_attempts:
+                self._blacklist(track, 'max_attempts (%s)' % res.error)
+        return None, res
+
+    def _center_first(self, zone_name: str) -> bool:
+        """Release the first object at the zone center unless several labels share the zone."""
+        return sum(1 for z in self.class_to_zone.values() if z == zone_name) <= 1
+
+    def _select(self, candidates: List[Detection], valid: List[Detection]
+                ) -> Optional[Detection]:
+        """Return select_target(...); labels at max_failures_per_label only when nothing else."""
+        capped = {lbl for lbl, n in self._label_failures.items() if n >= self.max_label_failures}
+        if capped:
+            rest = [d for d in candidates if d.label not in capped]
+            if rest:
+                t = select_target(rest, self.strategy, self.order, (0.0, 0.0),
+                                  self._blacklisted_xy(), self.match_dist, neighbors=valid)
+                if t is not None:
+                    return t
+        return select_target(candidates, self.strategy, self.order, (0.0, 0.0),
+                             self._blacklisted_xy(), self.match_dist, neighbors=valid)
+
+    # ------------------------------------------------------------- L1 / L2
+    def _loop_sort(self, rep: TaskReport) -> None:
+        empty = 0
+        while True:
+            if rep.placed >= self.required:
+                rep.stop_reason = 'done'
+                return
+            stop = self._stop_check()
+            if stop is not None:
+                rep.stop_reason = stop
+                return
+            status, result, frame = self._observe()
+            if status in ('fault', 'aborted'):
+                rep.stop_reason = status
+                return
+            if status == 'failed':
+                self._pause_after_failure()     # not 'nothing to pick': retry until the deadline
+                continue
+            valid: List[Detection] = result.valid_detections()
+            target = self._select(self._candidates(result), valid)
+            self._save_image(frame, result, target)
+            if target is None:
+                empty += 1
+                self._event('decision', action='nothing_to_pick', empty=empty)
+                if empty >= self.max_empty:
+                    rep.stop_reason = 'no_targets'
+                    return
+                self.clock.sleep(self.retry_s)
+                continue
+            empty = 0
+            stop, res = self._attempt(target, self.class_to_zone[target.label], rep, valid)
+            if res is not None:
+                rep.picks.append(res)
+                if res.ok:
+                    rep.placed += 1
+            if stop is not None:
+                rep.stop_reason = stop
+                return
+
+    # --------------------------------------------------------------------- L3
+    def apply_selector(self, selector: str, dets: Sequence[Detection]) -> Optional[Detection]:
+        """
+        Pick one detection by an L3 selector (positions in base XY).
+
+        leftmost / rightmost: along tasks.L3.left_axis; front / back: largest /
+        smallest base x; nearest / farthest: distance to the base; largest /
+        smallest: footprint length * width; middle: closest to the mean along
+        the left axis; any: nearest to the base.
+        """
+        dets = [d for d in dets if _has_xy(d)]
+        if not dets:
+            return None
+        axis = self.left_axis
+        n = float(np.linalg.norm(axis))
+        axis = axis / n if n > 1e-9 else np.array([0.0, 1.0])
+
+        def along(d: Detection) -> float:
+            return float(np.dot(np.asarray(_xy(d)), axis))
+
+        def dist(d: Detection) -> float:
+            return math.hypot(*_xy(d))
+
+        def area(d: Detection) -> float:
+            if d.length is None or d.width is None:
+                return math.nan
+            return float(d.length) * float(d.width)
+
+        if selector == 'leftmost':
+            return max(dets, key=along)
+        if selector == 'rightmost':
+            return min(dets, key=along)
+        if selector == 'front':
+            return max(dets, key=lambda d: _xy(d)[0])
+        if selector == 'back':
+            return min(dets, key=lambda d: _xy(d)[0])
+        if selector == 'farthest':
+            return max(dets, key=dist)
+        if selector in ('largest', 'smallest'):
+            sized = [d for d in dets if math.isfinite(area(d))]
+            if not sized:
+                return None
+            return (max if selector == 'largest' else min)(sized, key=area)
+        if selector == 'middle':
+            mean = float(np.mean([along(d) for d in dets]))
+            return min(dets, key=lambda d: abs(along(d) - mean))
+        return min(dets, key=dist)          # 'nearest' and 'any'
+
+    def _loop_instructions(self, rep: TaskReport) -> None:
+        if self._specs is None:
+            self._parse_instructions()
+        for text, spec in self._specs:
+            stop = self._stop_check()
+            if stop is not None:
+                rep.stop_reason = stop
+                return
+            entry = PickResult(ok=False, stage='parse', label=spec.label, zone=spec.zone,
+                               detail={'instruction': text, 'spec': spec.summary(), 'picks': [],
+                                       'fault': False})
+            self._event('instruction', **spec.summary())
+            t_start = self.clock.now()
+            if not spec.ok:
+                entry.error = spec.reason
+                rep.picks.append(entry)
+                continue
+            stop = self._run_instruction(spec, entry, rep)
+            entry.duration = self.clock.now() - t_start
+            rep.picks.append(entry)
+            if entry.ok:
+                rep.placed += 1
+            self._event('instruction_result', instruction=text, ok=entry.ok, stage=entry.stage,
+                        error=entry.error, picks=entry.detail['picks'])
+            if stop is not None:
+                rep.stop_reason = stop
+                return
+        rep.stop_reason = 'done'
+
+    def _run_instruction(self, spec, entry: PickResult, rep: TaskReport) -> Optional[str]:
+        need = None if spec.count == COUNT_ALL else int(spec.count)
+        done = 0
+        empty = 0
+        entry.stage = 'running'
+        while need is None or done < need:
+            stop = self._stop_check()
+            if stop is not None:
+                entry.error = stop
+                entry.detail['fault'] = stop == 'fault'
+                return stop
+            status, result, frame = self._observe()
+            if status in ('fault', 'aborted'):
+                entry.error = status
+                return status
+            if status == 'failed':
+                self._pause_after_failure()
+                continue
+            valid = result.valid_detections()
+            same = [d for d in valid if d.label == spec.label and _has_xy(d)]
+            if spec.selector == 'any':
+                same = [d for d in same
+                        if not is_blacklisted(d, self._blacklisted_xy(), self.match_dist)]
+            target = self.apply_selector(spec.selector, same)
+            self._save_image(frame, result, target)
+            if target is None:
+                empty += 1
+                if need is None and done > 0 and empty >= 2:
+                    break                       # 'all': nothing left
+                if empty >= self.max_empty:
+                    entry.error = 'no_matching_object'
+                    break
+                self.clock.sleep(self.retry_s)
+                continue
+            empty = 0
+            if is_blacklisted(target, self._blacklisted_xy(), self.match_dist):
+                entry.error = 'selected object failed before'
+                break
+            stop, res = self._attempt(target, spec.zone, rep, valid)
+            if res is not None:
+                entry.detail['picks'].append(pick_summary(res))
+                if res.ok or (self.dry_run and res.stage == 'dry_run_done'):
+                    done += 1
+            if stop is not None:
+                entry.error = stop
+                entry.detail['fault'] = stop == 'fault'
+                return stop
+        entry.ok = not self.dry_run and (done >= need if need is not None else done > 0)
+        entry.stage = 'done' if entry.ok else ('dry_run_done' if self.dry_run else 'failed')
+        if entry.ok:
+            entry.error = ''
+        return None

@@ -1,0 +1,289 @@
+# cube_task default configuration. Units: m, rad unless a key ends in _deg / _s.
+# Site-specific values (taught poses, zones, colors, task mapping) go into the
+# overlay files below, merged over this file in order when they exist.
+# Relative paths are relative to the package root (the directory holding config/).
+# Keys marked SITE must be checked or taught on the real setup.
+
+site_overlays:
+  - config/site/tasks.yaml     # labels and class_to_zone for L1 / L2 (edit by hand)
+  - config/site/poses.yaml     # written by tools/teach_poses (observe pose, zones)
+  - config/site/colors.yaml    # written by tools/color_calib
+  - config/site/local.yaml     # anything else, e.g. speed_percent, tcp_offset
+
+robot:
+  backend: pyagxarm            # pyagxarm | sim
+  model: piper                 # piper | piper_h | piper_l | piper_x
+  firmware: default            # default | v183 | v188 | v189 (pyAgxArm PiperFW; connect logs a mismatch)
+  can_interface: socketcan
+  can_channel: can0
+  effector: agx_gripper
+  speed_percent: 30            # SITE: start slow, raise after dry runs
+  connect_timeout_s: 5.0       # wait for joint / pose / status feedback after connect
+  enable_timeout_s: 5.0        # wait for all joints to report enabled
+  # TCP (fingertip center when closed) in the flange frame [x y z roll pitch yaw].
+  # SITE: measure flange face -> fingertip center along the flange z axis.
+  tcp_offset: [0.0, 0.0, 0.140, 0.0, 0.0, 0.0]
+  gripper:
+    max_width: 0.070           # SITE: 0.070 standard gripper, 0.100 new gripper
+    open_margin: 0.020         # open to object width + margin before descending
+    close_width: 0.0           # commanded width when grasping
+    force: 1.5                 # N, range [0, 3]
+    settle_s: 0.6              # wait after a gripper command
+    timeout_s: 3.0
+    empty_width: 0.004         # measured width below this after closing = nothing held
+    stable_s: 0.15             # width must be stable this long to count as settled
+    width_tolerance: 0.015     # measured vs expected object width, for logging only
+  motion:
+    pos_tol: 0.006             # TCP position tolerance for "arrived"
+    rot_tol_deg: 4.0
+    settle_samples: 5          # consecutive stable feedback samples required
+    stable_eps: 0.0005         # m change between samples counted as stable
+    min_wait_s: 0.25           # wait before first completion check
+    timeout_base_s: 6.0
+    timeout_per_m_s: 15.0      # extra timeout per meter of travel
+    poll_hz: 50
+    feedback_max_age_s: 0.5    # feedback older than this = comm problem
+    stall_s: 1.0               # stopped but not at the target this long -> 'stalled'
+    require_motion_status: true  # set false only if a firmware never reports motion_status 0
+    # false: lift / release / retreat / recovery moves use move_p (P2P) instead of move_l;
+    # set false if the on-site test shows the wrist spinning on a move_l across the
+    # +-180 deg roll wrap.
+    linear_moves: true
+    sim_lin_speed: 0.15        # m/s at 100 percent (sim arm only)
+    sim_overhead_s: 0.35       # per motion command (sim arm only)
+  workspace:                   # TCP limits in the base frame
+    x: [0.08, 0.60]
+    y: [-0.40, 0.40]
+    z: [-0.05, 0.50]
+    r_min: 0.10                # horizontal radius from the base z axis
+    r_max: 0.62
+    min_table_clearance: 0.002 # TCP z >= table z + this (fingertips above table)
+    max_tilt_from_down_deg: 30 # move_tcp targets: tool z must point within this of -Z
+  poses:
+    # Joint angles (rad). observe_joints: arm pose while the camera captures.
+    # Eye-to-hand: a park pose outside the camera view of the pick area.
+    # Eye-in-hand: a pose looking down at the pick area. SITE: teach these.
+    home_joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    observe_joints: null
+    # Fallback when observe_joints is null: top-down TCP pose [x y z closing_angle].
+    # PiPER reaches a vertical tool only up to TCP z ~0.10 m at r 0.2-0.3 m (0.02 m at r 0.45);
+    # higher poses are leaned outward (task/reach.py).
+    observe_tcp: [0.20, 0.0, 0.15, 1.5708]
+
+camera:
+  backend: ros                 # ros | file | sim
+  mount: eye_to_hand           # eye_to_hand | eye_in_hand. SITE
+  # SITE: official calibration. eye_to_hand: T_base_camera. eye_in_hand: T_flange_camera.
+  extrinsics_file: config/site/extrinsics.yaml
+  # Inline alternative used by simulation: {mount: ..., matrix: 4x4}. Wins over the file.
+  extrinsics_inline: null
+  frames_to_average: 3         # per-pixel median of depth over N frames
+  settle_s: 0.4                # wait after the arm stops before capturing
+  frame_timeout_s: 2.0
+  max_frame_age_s: 1.0         # frames older than this are stale
+  ros:
+    # Orbbec (大白) ROS2 driver defaults; RealSense: /camera/camera/color/image_raw,
+    # /camera/camera/aligned_depth_to_color/image_raw, /camera/camera/color/camera_info
+    color_topic: /camera/color/image_raw
+    depth_topic: /camera/depth/image_raw
+    info_topic: /camera/color/camera_info
+    depth_info_topic: /camera/depth/camera_info
+    depth_registered: true     # depth already aligned to color (Orbbec depth_registration)
+    depth_to_color: null       # 4x4 T_color_depth, only used when depth_registered is false
+    depth_scale: 0.001         # 16UC1 depth units -> m (32FC1 is already m)
+    sync_slop_s: 0.05          # max color / depth stamp difference of a pair (s, < 1)
+    # header | receipt (receipt: pair color / depth by arrival time, for drivers that
+    # stamp the two streams from different clocks)
+    sync_mode: header
+    ignore_distortion: false   # true: ignore CameraInfo D (dist = 0); on-site escape hatch
+    # {fx, fy, cx, cy, width, height, dist}: color intrinsics used instead of CameraInfo;
+    # on-site escape hatch
+    intrinsics_override: null
+    qos_reliable: false        # false = sensor-data QoS (best effort)
+    start_timeout_s: 5.0       # wait for the first RGB-D pair at start (0 = no wait)
+    yuv422_order: uyvy         # uyvy (ROS standard) | yuyv, for drivers that mislabel yuv422
+  file:
+    dir: ''                    # directory written by tools/capture
+    loop: true
+    repeat: 1                  # serve each recorded frame N times (set to frames_to_average)
+
+perception:
+  debug_image: true
+  l1_block_size: 0.035         # SITE: edge length of the L1 cubes (used to cut merged blocks)
+  depth:
+    min_z: 0.15                # valid depth range (m)
+    max_z: 3.0
+  roi:
+    # Pick area polygon in base XY (m). Objects outside are ignored. SITE
+    pick_polygon: [[0.15, -0.22], [0.45, -0.22], [0.45, 0.22], [0.15, 0.22]]
+    exclude_zones: true        # also ignore everything inside place zones
+    zone_exclude_margin: 0.02
+  table:
+    ransac_iters: 300
+    inlier_thresh: 0.005
+    min_inlier_ratio: 0.3
+    max_tilt_deg: 20.0         # plane normal vs base z (eye-to-hand sanity check)
+    # Table z in the base frame from TCP touches (teach_poses p). SITE. Also the lower
+    # bound of the grasp floor and of the SafeArm table floor; a perceived table more than
+    # 10 mm off is warned. null = none of this (self check WARN in real mode)
+    expected_z: null
+    expected_z_tol: 0.05
+    reuse_s: 0.0               # reuse a fitted plane for this long (0 = refit every frame)
+    roi_margin: 0.05           # fit the plane on the pick polygon grown by this
+    ransac_points: 4000
+    min_points: 200
+    sample_points: 20000
+    seed: 0
+    min_coverage: 0.25         # plane must cover this fraction of the visible pick polygon
+  segmentation:
+    min_height: 0.008          # pixels higher than this above the table = object
+    max_height: 0.25
+    min_area_m2: 0.00012       # about 11 x 11 mm footprint
+    max_area_m2: 0.040
+    min_points: 40
+    morph_open_px: 3
+    morph_close_px: 5
+    split_touching: true       # watershed split on the height map
+    split_min_peak_dist_m: 0.025
+    top_percentile: 90         # robust "top" height percentile
+    edge_erode_px: 2           # ignore mask border pixels for geometry
+    split_neck_ratio: 0.75
+    split_cell_m: 0.002
+    split_height_jump_m: 0.008
+    # split barrier step >= k * sqrt(2) * table-fit rms (far / noisy camera), capped at
+    # 25 mm; 0 = fixed split_height_jump_m only
+    split_jump_noise_k: 6.0
+    despike: true              # drop isolated depth pixels much nearer than their 3x3 median
+    edge_jump_abs_m: 0.006
+    edge_jump_rel: 0.01
+    extent_trim_pct: 0.5
+    max_occlusion_ratio: 0.2   # reject instances mostly hidden behind nearer objects
+    min_blob_px: 15
+    max_instances: 40
+    color_split: true          # L1: split one instance that contains two block colors
+    color_split_min_fraction: 0.25
+    merged_blocks: split       # split | reject | off (off when L1 blocks are not cubes)
+  classifier:
+    backend: color             # color | knn | onnx | onnx+knn
+    min_score: 0.55            # below this -> 'unknown'
+    color:
+      # HSV ranges, OpenCV scale (H 0-180, S/V 0-255). Several ranges per class are OR'ed.
+      # SITE: tune with tools/color_calib on the real blocks and light.
+      classes:
+        red:    [[[0, 90, 60], [8, 255, 255]], [[170, 90, 60], [180, 255, 255]]]
+        orange: [[[9, 110, 80], [20, 255, 255]]]
+        yellow: [[[21, 90, 80], [34, 255, 255]]]
+        green:  [[[35, 60, 40], [85, 255, 255]]]
+        blue:   [[[95, 90, 40], [130, 255, 255]]]
+        purple: [[[131, 50, 40], [169, 255, 255]]]
+      min_fraction: 0.35       # fraction of instance pixels in the winning range
+    knn:
+      model_file: models/knn_model.npz
+      k: 3
+      max_distance: 3.0        # RMS standardized feature distance; farther -> unknown
+    onnx:
+      model_file: models/detector.onnx
+      labels_file: models/detector_labels.txt
+      input_size: 640
+      conf_threshold: 0.35
+      nms_threshold: 0.45
+      backend: auto            # auto | opencv | onnxruntime
+      label_map: {}            # detector label -> task label, e.g. {sports ball: orange}
+      min_mask_overlap: 0.3
+  tracking:
+    match_dist_m: 0.03         # same object across frames if centers are closer
+    confirm_frames: 1
+
+grasp:
+  approach_height: 0.08        # pre-grasp TCP height above the object top
+  transit_clearance: 0.12      # transit height above the highest obstacle / table
+  transit_z_min: 0.15          # absolute minimum transit TCP z
+  lift_height: 0.10            # lift above the grasp height after closing
+  grasp_depth_ratio: 0.5       # TCP goes this fraction of object height below the top
+  max_grasp_depth: 0.030       # but at most this far below the top (finger length)
+  min_grasp_depth: 0.008
+  linear_descent: true         # move_l for the last approach / lift
+  block_labels_square: true    # treat L1 blocks as 90-degree symmetric
+  use_cap_center: true         # aim at the center of the topmost points (round objects)
+  max_object_width: null       # null -> robot.gripper.max_width - 0.005
+  verify_grasp: true
+
+place:
+  release_height: 0.06         # object bottom above the zone floor when the gripper opens
+  retreat_height: 0.10
+  open_width: null             # null -> robot.gripper.max_width
+  # Spread releases inside a zone: first free slot of a grid from zone.size minus the
+  # held object's footprint (zone center first when at most one class_to_zone label maps
+  # to the zone); the release clears the tallest object already in the zone by 1 cm;
+  # false = always the zone center
+  spread_releases: true
+  slot_margin: 0.015           # m, a spread release keeps the footprint this far inside the edge
+
+# Place zones in the base frame. center: [x, y, floor_z]; size: [sx, sy] (m); yaw (rad).
+# SITE: teach with tools/teach_poses (drag the arm above each zone).
+zones: {}
+
+tasks:
+  L1:
+    time_limit_s: 180
+    required: 3
+    classifier: color
+    labels: [red, green, blue]   # SITE: block classes in this round
+    # label -> zone name. A target whose label is missing here is never picked.
+    class_to_zone: {}
+    order: []                  # optional fixed label order (referee-specified targets)
+  L2:
+    time_limit_s: 300
+    required: 6
+    classifier: knn
+    labels: []                 # SITE: fruit / vegetable classes
+    class_to_zone: {}
+    order: []
+  L3:
+    time_limit_s: 300
+    classifier: knn
+    instructions_file: ''      # one instruction per line
+    labels: []
+    class_to_zone: {}          # not used for routing; L3 names the zone in the instruction
+    label_aliases: {}          # label -> [Chinese / English names], e.g. apple: [苹果]
+    zone_aliases: {}           # zone -> [names], e.g. zone_blue: [蓝色托盘, 蓝盘]
+    left_axis: [0.0, 1.0]      # base XY direction that "left" means in instructions. SITE
+    llm:
+      enabled: false
+      url: http://127.0.0.1:8000/v1/chat/completions   # OpenAI-compatible local server
+      model: ''
+      timeout_s: 20
+      api_key_env: ''          # name of an env var holding a bearer token (never the token)
+
+runner:
+  selection: nearest           # nearest | score | isolated
+  max_attempts_per_object: 3
+  # Consecutive OK observations with no pickable target -> no_targets; camera /
+  # perception failures do not count (retried until the deadline, 2 s apart after 5 in a row)
+  max_empty_observations: 4
+  # null = 2 x max_attempts_per_object; a label with this many failed attempts is picked
+  # only when no other target is pickable
+  max_failures_per_label: null
+  min_time_for_pick_s: 12.0    # do not start a new pick with less time left
+  observe_retry_s: 0.5
+  start_on_enter: true         # wait for Enter before the timed run starts
+  return_home_at_end: true
+  dry_run_hover: 0.05          # --dry-run: stay this high above grasp / release poses
+
+sim:
+  joint_speed: 2.0             # rad/s at 100 percent (P2P moves)
+  noise_std: 0.0008            # depth noise at 0.5 m (grows with z^2)
+  dropout: 0.002               # fraction of random invalid depth pixels
+  seed: 0
+  arm_joint_noise_std: 0.0     # rad, SimArm final-pose noise
+  use_site_knn: false          # sim: use perception.classifier.knn.model_file instead of a sim model
+  # Filled by sim/scenarios.scenario_config_overlay():
+  intrinsics: null
+  T_base_camera: null          # true camera pose (eye_to_hand)
+  T_flange_camera: null        # true camera pose (eye_in_hand)
+  extrinsics_error: [0.0, 0.0] # [translation m, rotation deg] error of the estimate
+
+logging:
+  dir: ~/vision_runs
+  save_images: true
+  image_every_observation: true
