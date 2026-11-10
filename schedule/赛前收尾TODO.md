@@ -15,7 +15,7 @@
   - L3（大模型探索赛）本次不做，不要改 L3 相关代码，只保证它的测试不坏。
 - 机械臂（PiPER）和相机（奥比中光“大白”）由现场提供；相机由组委会安装和标定，队伍不能动它；队伍只带电脑。
 - 日程：11/10 线上培训；11/12–13 现场适配，真机时间很少；11/14 比赛。
-- 夹爪是 70 mm 还是 100 mm 行程目前未知。它直接决定 L2 能抓几类，见 2.2 节。
+- 夹爪行程是 100 mm（负责人 2026-11-10 确认；PIPER 用户手册 5.2 节：开合间距 0~100 mm，70 mm 是历史版本）。**所有项只按 100 mm 做，不再考虑 70 mm。** 手册核对结果见 2.6 节。
 
 ### 0.2 环境
 
@@ -122,7 +122,9 @@ MUJOCO_GL=egl env -u PYTHONPATH ~/.venvs/piper-mujoco/bin/python -m pytest -q -p
 | 红区（L2） | 柿子：橙，扁圆，宽 70 mm，高 50 mm，顶上有平的绿萼片，100 g；彩椒：红，高 90 mm（含绿柄），宽 70 mm，82 g |
 | 标签名 | `cucumber`、`pear`、`banana`、`potato`、`persimmon`、`bell_pepper`；区域名 `zone_green`、`zone_yellow`、`zone_red` |
 
-### 2.2 两种夹爪能抓什么（MuJoCo 实测 + 规划器计算）
+### 2.2 夹爪能抓什么（MuJoCo 实测 + 规划器计算）
+
+> 现场夹爪是 100 mm（见 0.1 节）。下表 70 mm 一列只是当时的测量记录，不是工作目标。
 
 MuJoCo 试验方法：顶部抓取，抬升 15 cm，搬运约 4 s。规划器的“可用开口”= 夹爪行程 − 2 × 5 mm 手指余量。
 
@@ -136,7 +138,7 @@ MuJoCo 试验方法：顶部抓取，抬升 15 cm，搬运约 4 s。规划器的
 | 柿子 | **不能**（约 71 mm） | 能 | |
 | 彩椒 | **不能**（67–70 mm） | 能 | |
 
-结论：70 mm 夹爪时 L2 每轮最多放对 3 个（黄瓜、香蕉、梨）；100 mm 时 6 个都能抓。L2 夹持力用 2.5 N，3.0 N 在仿真里没有更多余量；L1 泡沫方块用 1.5 N。
+结论：100 mm 夹爪 6 类都能抓。L2 夹持力用 2.5 N，3.0 N 在仿真里没有更多余量；L1 泡沫方块用 1.5 N。
 
 **风险**：规划器给梨选的夹持高度是离桌面 86 mm，也就是顶下约 39 mm，正好在“30 mm 必掉、40 mm 能稳”的边界附近。P1-4 必须专门验证。
 
@@ -150,13 +152,29 @@ MuJoCo 试验方法：顶部抓取，抬升 15 cm，搬运约 4 s。规划器的
 
 ### 2.4 可达性
 
-- PiPER 第 5 关节只有 ±70°。TCP 0.14 m 时，竖直向下的工具最高只能到 TCP z ≈ 0.10 m（半径 0.2–0.3 m）、0.065 m（0.40 m）、0.02 m（0.45 m）。更高的位姿由程序自动外倾：抓和放的位姿最多 30°，空中位姿最多 40°（`robot.workspace.max_tilt_free_deg`）。
+- PiPER 第 5 关节按 SDK 的限位 ±70° 计算（手册写 ±75°，代码沿用 SDK 的保守值，不改）。TCP 0.14 m 时，竖直向下的工具最高只能到 TCP z ≈ 0.10 m（半径 0.2–0.3 m）、0.065 m（0.40 m）、0.02 m（0.45 m）。更高的位姿由程序自动外倾：抓和放的位姿最多 30°，空中位姿最多 40°（`robot.workspace.max_tilt_free_deg`）。
 - 梨高 125 mm：接近位姿会自动降到顶上 2 cm（`grasp.min_approach_clearance`）。
-- 100 mm 夹爪如果更长，TCP 会变长，可达范围会再缩小。现场必须量 TCP。
+- 100 mm 夹爪的法兰面到指尖末端，按手册图纸读数是 142.5 mm（见 2.6 节）。上面的可达高度是按 TCP 0.14 m 算的，TCP 长 2.5 mm 后可达范围会略缩小。现场必须量 TCP。
 
 ### 2.5 仍然未知（11/10 培训时问，见 Q 节）
 
-夹爪型号和行程、TCP 长度、3 张卡纸和拾取区的位置、相机安装方式和标定文件格式、L1 是否有干扰块、“指定目标”怎么给、物体能否超出卡纸、果蔬模型的材质。
+TCP 长度的实测值（手册图纸读数 142.5 mm）、夹持力的单位换算（见 2.6 节和 Q-13）、3 张卡纸和拾取区的位置、相机安装方式和标定文件格式、L1 是否有干扰块、“指定目标”怎么给、物体能否超出卡纸、果蔬模型的材质。
+
+### 2.6 用户手册核对结果（2026-11-10）
+
+来源：PIPER 用户手册（CN），页面标注 V2.0.2，<https://agilexsupport.yuque.com/staff-hso6mo/alxgtf/ge7fevr2roh4tx33?singleDoc=>。读了全部正文和 4 张图（2.2.1 坐标系、7.3 机械臂带夹爪、7.7 夹爪尺寸图、7.10 100mm 夹爪爆炸图）。图纸上的数是从图片读的，现场实测优先。
+
+| 项目 | 手册 | 代码现状（11/10） | 处理 |
+|---|---|---|---|
+| 夹爪开合间距 | 0~100 mm（历史版本 0~70 mm），精度 ±0.5 mm | `robot.gripper.max_width` 0.070 | P0-3 改成 0.100 |
+| 法兰面到指尖末端 | 142.5 mm（图 7.7：50.5 + 19 + 73；图 7.3 也标 142.5） | `robot.tcp_offset` 第 3 个数 0.140 | P0-3 改成 0.1425；现场量出来的值优先 |
+| 夹爪外形 | 手指长 73 mm；全开时指尖内侧间距 102.5 mm、指根 110.5 mm；夹爪总宽 164 mm | MuJoCo 用的还是旧 70 mm 夹爪的外形（量出来指尖 0.135 m），只把行程放宽到 0.10 | 只记录。MuJoCo 里的手指外形和真夹爪不同 |
+| MDH 参数、零位末端坐标 | 全部关节为零时 X 56.128 mm、Z 213.266 mm、RY 85.0° | 正运动学算出 56.128、213.266、85.000，完全相同 | 不用改 |
+| 关节限位 | J1 ±154°，J2 0~195°，J3 −175~0°，J4 −100~112°，J5 ±75°，J6 ±170° | SDK 预设：±150°，0~180°，−170~0°，±100°，±70°，±170° | 不改，沿用 SDK 的保守值 |
+| 夹合力 | 额定 40 N / 最大 50 N | SDK 文档写 force 范围 [0, 3.0] N，代码限制在 [0.5, 3.0] | 两个数差一个数量级，原因未知，见 Q-13 |
+| 负载 | 末端有效负载 ≤ 1.5 kg；夹爪本体 500 g | 最重的物体 100 g | 没有问题 |
+| 通讯 | CAN 2.0B，1 Mbps | `scripts/can_up.sh` 码率 1000000 | 一致 |
+| 夹爪安装方向 | 新版夹爪：有相机安装孔的一侧与 J6 零点刻度同侧 | — | 现场看一眼 |
 
 ## 时间表
 
@@ -189,23 +207,23 @@ MuJoCo 试验方法：顶部抓取，抬升 15 cm，搬运约 4 s。规划器的
   1. `make_scenario(task, seed, mount, difficulty, materials='official', layout='A', gripper_width=None)`：`materials` 默认 `official`，`legacy` 必须和旧版本完全一样。
   2. 官方物料按 2.1 节建模，用 `compound` 组合形状；L1 是 50 mm 方块；`hard` 难度加 1–2 个粉/橙/蓝/紫干扰块，并让两个方块紧贴。
   3. 放置区是 3 张 0.2 × 0.2 m 平铺卡纸（`wall_height` 0），名字是 `zone_green` / `zone_yellow` / `zone_red`。
-  4. 布局 A、B 都要可达：每张卡纸的 4 个角和释放位姿在外倾 ≤ 30° 时有逆解；拾取区和卡纸不重叠（留 2 cm）。
+  4. 布局 A、B 都要可达：每张卡纸的 4 个角和释放位姿在外倾 ≤ 30° 时有逆解；拾取区和卡纸不重叠（留 2 cm）。可达性按 TCP 0.1425 m 检查（`scenarios.py` 的 `DEFAULT_TCP_OFFSET` 第 3 个数改成 0.1425，见 2.6 节）；`gripper_width=None` 时按 0.10 处理。
   5. 两种相机安装都能看到整个拾取区和 3 张卡纸。
   6. `scenario_config_overlay` 要写入：L1/L2 的 labels 和 class_to_zone、zones、`perception.l1_block_size` 0.05、拾取区多边形；给了 `gripper_width` 时还要写 `robot.gripper.max_width`。
   7. `sim/teach.py` 的仿真 KNN 用官方物料、两种安装一起训练，并输出每类的留一法准确率和跨区混淆。
 - **验收**：
   - `python3 -m pytest -q -p no:cacheprovider test/test_sim_*.py` 0 失败。
-  - 下面 320 个组合全部能生成，且同一组参数两次生成的结果完全一致：L1/L2 × 种子 0–19 × 两种安装 × 布局 A/B × 夹爪 0.07/0.10。
-  - 每个场景里，夹爪能抓的物体在 `try_grasp` 下确实能抓。
+  - 下面 160 个组合全部能生成，且同一组参数两次生成的结果完全一致：L1/L2 × 种子 0–19 × 两种安装 × 布局 A/B，夹爪 0.10。
+  - 每个场景里，所有目标物体在 `try_grasp` 下确实能抓（100 mm 夹爪 6 类都应可抓）。
   - 仿真 KNN 留一法每类准确率 ≥ 95%，跨区混淆 0（梨↔土豆/香蕉、柿子↔土豆尤其要看）。
   - `materials='legacy'` 的旧测试全部照常通过。
-- **汇报**：两个布局的卡纸坐标和可达余量；70 mm 夹爪下哪些类别不可抓。
+- **汇报**：两个布局的卡纸坐标和可达余量（按 TCP 0.1425 m）；如果有类别在 100 mm 夹爪下不可抓，逐个列出。
 
 ### P0-3 默认配置补齐
 
-- **文件**：`config/default.yaml`、`config/examples/tasks.example.yaml`。
+- **文件**：`config/default.yaml`、`config/examples/tasks.example.yaml`、`config/examples/local.example.yaml`。
 - **要求**：
-  1. 改值：`perception.l1_block_size` 0.05；`tasks.L1.labels` `[red, green, yellow]`。
+  1. 改值：`perception.l1_block_size` 0.05；`tasks.L1.labels` `[red, green, yellow]`；`robot.gripper.max_width` 0.100；`robot.tcp_offset` 第 3 个数 0.1425（依据见 2.6 节）。
   2. 代码读取但 `default.yaml` 里缺的键全部补上，带注释，值用代码里的默认值：
 
 | 键 | 默认值 |
@@ -220,7 +238,7 @@ MuJoCo 试验方法：顶部抓取，抬升 15 cm，搬运约 4 s。规划器的
 | `robot.workspace.max_tilt_free_deg` | 40 |
 | `tasks.L1.gripper_force` | 1.5 |
 | `tasks.L2.gripper_force` | 2.5 |
-| `sim.mujoco.gripper_max_width` | null |
+| `sim.mujoco.gripper_max_width` | 0.10（不用代码默认的 null：null 会保留 MuJoCo 模型自带的 0.07 行程） |
 | `sim.mujoco.materials` | null |
 | `sim.mujoco.card_collision` | true |
 | `sim.mujoco.grip_force_scale` | 2.0 |
@@ -228,7 +246,7 @@ MuJoCo 试验方法：顶部抓取，抬升 15 cm，搬运约 4 s。规划器的
 | `sim.mujoco.gripper_kv` | 15 |
 | `sim.mujoco.gripper_speed` | 0.10 |
 
-  3. `robot.gripper.max_width` 保持 0.07，注释写明“SITE：100 mm 夹爪改成 0.10”。
+  3. `robot.gripper.max_width` 和 `robot.tcp_offset` 的注释写明：100 mm 夹爪，取值来自用户手册图纸，SITE：现场量出的值优先。`local.example.yaml` 里的这两个值同步改成 0.100 和 0.1425。
   4. `tasks.example.yaml` 改成官方的 L1/L2 标签和映射（2.1 节）。
 - **验收**：
   - 写一个检查脚本（放 `test/test_config_keys.py`，作为测试保留）：扫描 `cube_task/` 下所有 `cfg.get('...')` / `_float(cfg, '...')` / `_required_float(cfg, '...')` 的完整键路径，每个都必须在 `default.yaml` 里存在。结果 0 缺失。
@@ -238,13 +256,13 @@ MuJoCo 试验方法：顶部抓取，抬升 15 cm，搬运约 4 s。规划器的
 
 - **文件**：`cube_task/tools/common.py`、`cube_task/tools/sim_bench.py`、`cube_task/sim/mujoco/run.py`，以及相应测试。
 - **要求**：
-  1. `run_task` / `view` 等工具在 `--mode sim` 和 `--mode mujoco` 下支持 `--materials official|legacy`（默认 official）、`--layout A|B`、`--gripper-width 0.07|0.10`。
-  2. `sim_bench` 支持 `--materials`、`--layouts A,B`、`--gripper-widths 0.07,0.10`，对两种 `--backend` 都有效。
+  1. `run_task` / `view` 等工具在 `--mode sim` 和 `--mode mujoco` 下支持 `--materials official|legacy`（默认 official）、`--layout A|B`、`--gripper-width <米>`（默认 0.10）。
+  2. `sim_bench` 支持 `--materials`、`--layouts A,B`、`--gripper-widths <米,...>`（默认 0.10），对两种 `--backend` 都有效。
   3. 夹爪宽度要同时设 `robot.gripper.max_width`，MuJoCo 下还要设 `sim.mujoco.gripper_max_width`。
   4. `sim_bench` 的输出和 JSON 增加**按类别统计**：每类的出现次数、尝试次数、放对、放错、掉落、因 `too_wide` 跳过的次数、失败原因。
 - **验收**：
   - 这两条命令都能跑完，并打印按类别的统计表：
-    - `python3 -m cube_task sim_bench --tasks L2 --seeds 0-1 --layouts A,B --gripper-widths 0.07,0.10 --jobs 4`
+    - `python3 -m cube_task sim_bench --tasks L2 --seeds 0-1 --layouts A,B --gripper-widths 0.10 --jobs 4`
     - `bash scripts/mujoco_run.sh sim_bench --backend mujoco --tasks L1 --seeds 0 --gripper-widths 0.10`
   - `test/test_tools_runtime_sim_bench.py` 覆盖新选项。
 
@@ -257,8 +275,7 @@ MuJoCo 试验方法：顶部抓取，抬升 15 cm，搬运约 4 s。规划器的
   - 特别注意 `test_e2e_l1.py::test_targets_pick_only_the_given_labels_in_order`。它对应 L1 的“裁判指定目标”功能，必须真的修好，不能把测试改松。
   - 新增官方物料的端到端测试 `test/test_e2e_official.py`（运动学仿真）：
     - L1：种子 0、1，两种安装，3/3 放对，放错 0；
-    - L2 + 0.10 夹爪：种子 0，两种安装，6/6 放对，放错 0；
-    - L2 + 0.07 夹爪：种子 0，黄瓜、香蕉、梨放对，其余 3 类一次都不尝试抓取，放错 0。
+    - L2 + 0.10 夹爪：种子 0，两种安装，6/6 放对，放错 0。
 - **验收**（P0 的总门槛）：
   - 系统 Python 全量测试 0 failed、0 error，收集数 ≥ P0-1 基线；
   - MuJoCo 测试 0 failed；
@@ -275,7 +292,7 @@ MuJoCo 试验方法：顶部抓取，抬升 15 cm，搬运约 4 s。规划器的
 
 ```bash
 python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-19 \
-  --mounts eye_to_hand,eye_in_hand --layouts A,B --gripper-widths 0.07,0.10 \
+  --mounts eye_to_hand,eye_in_hand --layouts A,B --gripper-widths 0.10 \
   --jobs 12 --json ~/vision_runs/p1/kin_main.json --save-logs
 ```
 
@@ -284,22 +301,20 @@ python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-19 \
 | 场景 | 指标 |
 |---|---|
 | 所有组合 | 放错 = 0 |
-| L1（两种夹爪） | 轮成功率 ≥ 95%；平均用时 ≤ 90 s，最长 ≤ 120 s |
-| L2 + 0.10 | 轮成功率 ≥ 90%；平均用时 ≤ 200 s，最长 ≤ 260 s |
-| L2 + 0.07 | 黄瓜、香蕉、梨的单类放对率都 ≥ 90%；土豆/柿子/彩椒的抓取尝试次数 = 0；三个可抓物体放完后 ≤ 30 s 内结束本轮 |
+| L1 | 轮成功率 ≥ 95%；平均用时 ≤ 90 s，最长 ≤ 120 s |
+| L2 | 轮成功率 ≥ 90%；平均用时 ≤ 200 s，最长 ≤ 260 s |
 
 ### P1-2 MuJoCo 物理基准
 
-- **命令**：`bash scripts/mujoco_run.sh sim_bench --backend mujoco --tasks L1,L2 --seeds 0-9 --mounts eye_to_hand,eye_in_hand --layouts A --gripper-widths 0.07,0.10 --jobs 6 --json ~/vision_runs/p1/mj_main.json --save-logs`
+- **命令**：`bash scripts/mujoco_run.sh sim_bench --backend mujoco --tasks L1,L2 --seeds 0-9 --mounts eye_to_hand,eye_in_hand --layouts A --gripper-widths 0.10 --jobs 6 --json ~/vision_runs/p1/mj_main.json --save-logs`
 - **指标**：
 
 | 场景 | 指标 |
 |---|---|
 | 所有组合 | 放错 = 0；掉落物体数 ≤ 物体总数的 2% |
 | L1 | 轮成功率 ≥ 90%；首次成功率 ≥ 85% |
-| L2 + 0.10 | 轮成功率 ≥ 80%；每一类的单类放对率 ≥ 85% |
-| L2 + 0.07 | 黄瓜、香蕉单类放对率 ≥ 90%，梨 ≥ 80% |
-| 用时 | L1 平均 ≤ 90 s；L2（0.10）平均 ≤ 200 s，最长 ≤ 260 s |
+| L2 | 轮成功率 ≥ 80%；每一类的单类放对率 ≥ 85% |
+| 用时 | L1 平均 ≤ 90 s；L2 平均 ≤ 200 s，最长 ≤ 260 s |
 
 ### P1-3 鲁棒性
 
@@ -316,8 +331,8 @@ python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-19 \
 ### P1-4 梨的专项验证
 
 - **原因**：规划器给梨选的夹持点在顶下约 39 mm，正好在“30 mm 必掉、40 mm 能稳”的边界附近（见 2.2 节）。
-- **步骤**：用完整流程（识别 → 规划 → MujocoArm）跑 20 个只有一个梨的场景，梨的位置和朝向随机，两种夹爪各跑一遍；夹持力 2.5 N。
-- **指标**：每种夹爪 ≥ 18/20 放进绿区；梨倒下不算失败，只要在区域内。
+- **步骤**：用完整流程（识别 → 规划 → MujocoArm）跑 20 个只有一个梨的场景，梨的位置和朝向随机，夹爪 0.10；夹持力 2.5 N。
+- **指标**：≥ 18/20 放进绿区；梨倒下不算失败，只要在区域内。
 - **如果不达标**：只允许在 `perception/grasp.py` 里调颈部夹持高度规则（例如要求夹持点在顶下 ≥ 45 mm），并加回归测试。
 
 ### P1-5 L1 干扰色专项
@@ -332,16 +347,15 @@ python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-19 \
 
 ### P1-6 修一轮
 
-- 按 P1-1 到 P1-5 的失败原因排序，修排在前 3 的、能在代码里修的问题。“70 mm 夹爪抓不了”这类硬件限制不算。
+- 按 P1-1 到 P1-5 的失败原因排序，修排在前 3 的、能在代码里修的问题。硬件本身的限制不算。
 - 每个修复都要加回归测试，并重跑受影响的那部分基准，汇报修复前后的对比。
 - 修复后统一检查必须仍然全绿。
 
 ### P1-7 演示视频
 
-- 用官方物料录 3 段视频，放到 `~/vision_runs/mujoco/`：
+- 用官方物料录 2 段视频（夹爪 0.10），放到 `~/vision_runs/mujoco/`：
   - `official_L1_s0.mp4`
   - `official_L2_s0_w100.mp4`
-  - `official_L2_s0_w70.mp4`
 - 命令示例：`bash scripts/mujoco_run.sh run_task --task L2 --mode mujoco --seed 0 --gripper-width 0.10 --video ~/vision_runs/mujoco/official_L2_s0_w100.mp4`
 - **验收**：每段视频抽 3 帧检查：物体外形和颜色像真物（黄瓜细长深绿、梨立着、彩椒红身绿柄、柿子橙色带萼片）；3 张卡纸都能看见；画面里的结果和打印的物理真值一致。
 
@@ -354,14 +368,13 @@ python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-19 \
 - **要求**：每个已知答案都写进对应的配置模板，仍未知的标成 `SITE: 待现场确认`；不得猜测取值。
 - **验收**：Q 节每一条都有“已写入 X”或“待现场确认”的记录。
 
-### P2-2 两套夹爪配置，现场只需复制
+### P2-2 夹爪配置，现场只需复制
 
-- **文件**：新建 `config/examples/gripper70.yaml`、`config/examples/gripper100.yaml`，更新 `config/examples/tasks.example.yaml`，并在 `config/default.yaml` 的 `site_overlays` 里加一行 `config/site/gripper.yaml`。
+- **文件**：新建 `config/examples/gripper100.yaml`，更新 `config/examples/tasks.example.yaml`，并在 `config/default.yaml` 的 `site_overlays` 里加一行 `config/site/gripper.yaml`。
 - **内容**：
-  - `gripper70.yaml`：`robot.gripper.max_width: 0.070`，`tasks.L2.gripper_force: 2.5`，注释写明“土豆、柿子、彩椒会被跳过”。
-  - `gripper100.yaml`：`robot.gripper.max_width: 0.100`，`tasks.L2.gripper_force: 2.5`，并提醒必须在现场量 `robot.tcp_offset`（100 mm 夹爪可能更长）。
+  - `gripper100.yaml`：`robot.gripper.max_width: 0.100`，`robot.tcp_offset` 第 3 个数 0.1425，`tasks.L2.gripper_force: 2.5`，并提醒必须在现场量 `robot.tcp_offset`（0.1425 是手册图纸读数，见 2.6 节）。
 - **用法**（写进文件头注释）：现场 `cp config/examples/gripper100.yaml config/site/gripper.yaml`，并把 `config/site/gripper.yaml` 加到 `default.yaml` 的 `site_overlays` 列表里（P2-2 顺手加上，文件不存在时自动忽略）。
-- **验收**：对两个文件分别跑 `python3 -m cube_task check_setup --mode sim --task L2 --config config/examples/gripperXX.yaml`，0 个 FAIL；各跑一轮 `run_task --task L2 --mode sim --no-wait --config ...`，结果与 P1-1 一致。
+- **验收**：跑 `python3 -m cube_task check_setup --mode sim --task L2 --config config/examples/gripper100.yaml`，0 个 FAIL；跑一轮 `run_task --task L2 --mode sim --no-wait --config ...`，结果与 P1-1 一致。
 
 ### P2-3 文档更新
 
@@ -404,8 +417,8 @@ python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-19 \
 | # | 做什么 | 命令 / 方法 | 通过标准 | 估时 |
 |---|---|---|---|---|
 | 1 | 接线、CAN、自检 | `bash scripts/can_up.sh can0`；`python3 -m cube_task check_setup --task L1 --live` | CAN UP、码率 1000000；能读到关节、TCP、夹爪宽度；相机有帧 | 15 min |
-| 2 | **确认夹爪行程** | 示教器或官方示例把夹爪全开，读 `check_setup --live` 里的宽度 | 得到 0.07 或 0.10；复制对应的 `gripper70/100.yaml` 到 `config/site/` | 5 min |
-| 3 | 量 TCP | 尺子量法兰面到指尖中心 | 写进 `config/site/local.yaml` 的 `robot.tcp_offset` 第 3 个数 | 5 min |
+| 2 | **确认夹爪行程** | 示教器或官方示例把夹爪全开，读 `check_setup --live` 里的宽度 | 读数约 0.10（确认是 100 mm 夹爪）；复制 `gripper100.yaml` 到 `config/site/gripper.yaml`。读数明显不是 0.10 时先停下来问工作人员 | 5 min |
+| 3 | 量 TCP | 尺子量法兰面到指尖末端（手册图纸读数 142.5 mm） | 写进 `config/site/local.yaml` 的 `robot.tcp_offset` 第 3 个数 | 5 min |
 | 4 | 相机和外参文件 | 问清话题名和外参文件；`view --task L1` | 画面里拾取区和 3 张卡纸的投影位置与实物对得上；桌面 rms ≤ 3 mm | 20 min |
 | 5 | 示教观察位、拾取区、卡纸 | `python3 -m cube_task teach_poses`：`o` 观察位；`p` 触碰拾取区 4 角；`z` 触碰每张卡纸中心，名字 `zone_green/zone_yellow/zone_red`，尺寸 `0.2 0.2`，围边 `0`；`w` 写入 | 写入后每张卡纸的可达性检查全部 OK；`perception.table.expected_z` 已写入 | 30 min |
 | 6 | 核对外参 | `python3 -m cube_task calib_verify --task L1 --all --hover 0.03 --speed 20` | 至少 3 个物体上方悬停，指尖中心与物体中心偏差 ≤ 5 mm；超过时先问工作人员，经同意后才用 `--apply` 或 `calib_points` | 20 min |
@@ -442,7 +455,7 @@ python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-19 \
 
 | # | 问题 | 为什么重要 | 答案写到哪里 | 答案 |
 |---|---|---|---|---|
-| 1 | 夹爪是哪一款？行程 70 mm 还是 100 mm？法兰面到指尖中心多长？ | 70 mm 时土豆、柿子、彩椒抓不了（2.2 节）；TCP 长度决定可达范围和下探深度 | `robot.gripper.max_width`、`robot.tcp_offset` | |
+| 1 | 夹爪是哪一款？行程 70 mm 还是 100 mm？法兰面到指尖中心多长？ | 70 mm 时土豆、柿子、彩椒抓不了（2.2 节）；TCP 长度决定可达范围和下探深度 | `robot.gripper.max_width`、`robot.tcp_offset` | 行程 100 mm（负责人 11/10 确认，手册 5.2 节一致）。法兰面到指尖末端：手册图纸读数 142.5 mm，现场实测优先 |
 | 2 | 相机装在哪里（固定支架还是手腕）？用什么驱动、ROS 话题名是什么？深度是否已对齐到彩色图？ | 决定坐标链和取图方式 | `camera.mount`、`camera.ros.*` | |
 | 3 | 官方给的标定结果是什么格式？矩阵方向（相机到基座还是相反）？父坐标系是基座、法兰还是 TCP？子坐标系是不是 `*_optical_frame`？如果相对 TCP，标定时驱动的 `tcp_offset` 是多少？ | 方向或坐标系弄错，抓取会偏几厘米甚至几十厘米；程序会拒绝非 optical 坐标系和缺 `tcp_offset` 的 TCP 外参 | `camera.extrinsics_file` | |
 | 4 | 3 张卡纸和拾取区在桌上的位置固定吗？每轮会不会变？卡纸是否贴在桌上？ | 决定要不要每轮重新示教区域 | `teach_poses` 示教 | |
@@ -454,6 +467,7 @@ python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-19 \
 | 10 | 电脑怎么接：USB-CAN 模块是现场提供还是自带？有没有网线和电源？ | 决定携带清单 | 携带清单 | |
 | 11 | 允许调速度吗？有哪些安全要求（急停、围栏、操作员位置）？ | 现场流程和速度设置 | `robot.speed_percent` | |
 | 12 | 果蔬模型的材质和重量偏差多大？能否提前借一套样品拍照？ | 影响夹持力和识别训练 | `tasks.L2.gripper_force`、`teach_classes` | |
+| 13 | SDK 的 `move_gripper_m(force=...)` 单位和范围是什么？SDK 文档写 [0, 3.0] N，用户手册写额定 40 N / 最大 50 N，两者怎么对应？ | 程序用 1.5 N（L1）和 2.5 N（L2），并把力限制在 [0.5, 3.0]。如果实际夹合力和这个数不是一回事，泡沫方块可能被夹扁，果蔬可能夹不住 | `tasks.L1.gripper_force`、`tasks.L2.gripper_force` | |
 
 ## 现场携带清单（11/12 出发前核对）
 
@@ -497,10 +511,10 @@ python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-19 \
    - `tasks.L2.labels` 和 `class_to_zone` 按 2.1 节；
    - `place.release_height: 0.015`（旧版本里这是物体底面离区域地面的高度，对平铺卡纸就是低位释放）；
    - `robot.gripper.force: 2.5`（旧版本没有按任务区分夹持力，L1 也会用 2.5 N，泡沫方块可以承受）；
-   - `robot.gripper.max_width` 按 Q-1 的答案；
-   - 100 mm 夹爪时加 `grasp.max_grasp_depth: 0.045`，让梨的夹持点落到顶下 45 mm 的颈部（MuJoCo 实测 2.5 N 能稳）。其他物体的夹持深度是高度的一半，不受影响。
+   - `robot.gripper.max_width: 0.100`，`robot.tcp_offset` 第 3 个数 0.1425（现场实测优先）；
+   - 加 `grasp.max_grasp_depth: 0.045`，让梨的夹持点落到顶下 45 mm 的颈部（MuJoCo 实测 2.5 N 能稳）。其他物体的夹持深度是高度的一半，不受影响。
 4. 旧版本的已知限制，要提前接受：
-   - 旧版本按底面最大尺寸判断能不能抓。用 70 mm 夹爪时，梨（底面 85 mm）、土豆、柿子、彩椒都会被判 `too_wide` 跳过，L2 只剩黄瓜和香蕉。
+   - 旧版本按底面最大尺寸判断能不能抓，上限是 `max_width` − 5 mm（100 mm 夹爪时是 95 mm）。6 类在旧版本上是否都能通过这个判断没有验证过，启用保底方案时要先确认。
    - 不加上面的 `max_grasp_depth` 时，梨会在顶下 30 mm 处被夹，MuJoCo 实测这样**必掉**。
    - 没有长物体沿对角线释放，黄瓜可能伸出卡纸。
    - 没有官方物料的仿真，只能用旧物料仿真验证流程。
