@@ -64,6 +64,15 @@ def test_small_bench_run_writes_json(tmp_path, capsys):
     assert 'wrong placements: none' in text
 
 
+@pytest.mark.parametrize('required', [1, 3, 6])
+@pytest.mark.parametrize('mount', sim_bench.MOUNTS)
+def test_grasp_miss_is_armed_before_the_last_continuous_close(required, mount):
+    # Preparation takes 2 commands; the first close is command 6, then every 9.
+    for seed in range(20):
+        spec = dict(task='L1', seed=seed, mount=mount, difficulty='normal', fault='grasp_miss')
+        assert sim_bench.fault_point(spec, required)['at_call'] <= 6 + 9 * (required - 1)
+
+
 def test_parallel_jobs_match_sequential(tmp_path):
     seq, par = tmp_path / 'seq.json', tmp_path / 'par.json'
     argv = ['--tasks', 'L1', '--seeds', '0-1', '--mounts', 'eye_to_hand', '--faults', 'drop']

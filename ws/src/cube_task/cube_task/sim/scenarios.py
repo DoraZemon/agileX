@@ -23,7 +23,7 @@ import numpy as np
 
 from ..core.transforms import inv_T, make_T, pose6_to_T, rotation_angle, top_down_T
 from ..core.types import CameraIntrinsics
-from .world import SimObject, SimWorld, SimZone
+from .world import FINGER_SIZE, GRASP_PAD_HALF, SimObject, SimWorld, SimZone
 
 # PiPER modified-DH table (d, a, alpha, theta_offset), copied from pyAgxArm
 # api/constants.py ROBOT_MDH_PRESET['piper']; link transform
@@ -49,6 +49,8 @@ DEFAULT_PICK_POLYGON = [[0.15, -0.22], [0.45, -0.22], [0.45, 0.22], [0.15, 0.22]
 TASKS = ('L1', 'L2', 'L3')
 MOUNTS = ('eye_to_hand', 'eye_in_hand')
 DIFFICULTIES = ('normal', 'hard')
+MATERIALS = ('official', 'legacy')
+LAYOUTS = ('A', 'B')
 
 # Orbbec-like wide-FOV color camera.
 DEFAULT_INTRINSICS = dict(fx=380.0, fy=380.0, cx=319.5, cy=239.5, width=640, height=480)
@@ -234,13 +236,28 @@ def _views() -> Tuple[Tuple[np.ndarray, int], ...]:
     return ((inv_T(eth), h - VIEW_MARGIN_PX), (inv_T(eih), h - EYE_IN_HAND_BOTTOM_PX))
 
 
-def fully_visible(obj: SimObject) -> bool:
-    """Check that the object's base AABB lies inside both mounts' observe images."""
+def fully_visible(obj: SimObject, views: Optional[Sequence[Tuple[np.ndarray, int]]] = None,
+                  exact: bool = False) -> bool:
+    """
+    Check that the object lies inside both mounts' observe images.
+
+    views: [(T_camera_base, max image row)] (default: the legacy views).
+    exact False: the corners of the base AABB must project inside; True:
+    the corners of every part's AABB ('compound'; other shapes: every surface
+    sample), so a long object lying diagonally is not penalized for its
+    empty AABB corners.
+    """
     d = DEFAULT_INTRINSICS
-    lo, hi = obj.aabb()
-    pts = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1])
-                    for z in (lo[2], hi[2])])
-    for T_cb, v_max in _views():
+    if exact and obj.shape == 'compound':
+        pts = np.array([[x, y, z] for lo, hi in obj.part_aabbs() for x in (lo[0], hi[0])
+                        for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+    elif exact:
+        pts = obj.surface_points()
+    else:
+        lo, hi = obj.aabb()
+        pts = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1])
+                        for z in (lo[2], hi[2])])
+    for T_cb, v_max in (_views() if views is None else views):
         pc = pts @ T_cb[:3, :3].T + T_cb[:3, 3]
         if np.any(pc[:, 2] <= 0.05):
             return False
@@ -333,6 +350,149 @@ L3_ZONE_ALIASES = {
 }
 
 
+# ------------------------------------------------------- official materials
+# Organizers' materials (2026-11): flat 0.20 m colored hard-card zones (no walls),
+# 50 mm EVA foam cubes (L1) and six plastic fruit / vegetable models (L2).
+CARD_SIZE = 0.20                     # m, card side
+CUBE_EDGE = 0.050                    # m, L1 foam cube edge (+- CUBE_EDGE_TOL)
+CUBE_EDGE_TOL = 0.002
+CUBE_MASS = 0.010                    # kg
+WIDE_GRIPPER_WIDTH = 0.100           # m, max_width of the new 100 mm stroke gripper
+L1_TARGETS = ('red', 'green', 'yellow')
+L1_DISTRACTORS = ('pink', 'orange', 'blue', 'purple')
+# Distractor colors with a range in config perception.classifier.color.classes; only
+# these join tasks.L1.labels (pink has none: it is the dangerous look-alike of red).
+L1_KNOWN_DISTRACTORS = ('orange', 'blue', 'purple')
+CUBE_COLORS = {'red': (40, 40, 200), 'green': (60, 170, 60), 'yellow': (40, 200, 220),
+               'pink': (170, 120, 245), 'orange': (30, 130, 240), 'blue': (200, 90, 40),
+               'purple': (150, 50, 120)}
+CARD_COLORS = {'green': (70, 165, 60), 'yellow': (50, 205, 230), 'red': (55, 55, 205)}
+OFFICIAL_ZONE_NAMES = ('zone_green', 'zone_yellow', 'zone_red')
+OFFICIAL_L1_CLASS_TO_ZONE = {'red': 'zone_red', 'green': 'zone_green', 'yellow': 'zone_yellow'}
+OFFICIAL_LABELS = ('cucumber', 'pear', 'banana', 'potato', 'persimmon', 'bell_pepper')
+OFFICIAL_CLASS_TO_ZONE = {'cucumber': 'zone_green', 'pear': 'zone_green',
+                          'banana': 'zone_yellow', 'potato': 'zone_yellow',
+                          'persimmon': 'zone_red', 'bell_pepper': 'zone_red'}
+OFFICIAL_MASS = {'cucumber': 0.043, 'pear': 0.100, 'banana': 0.050, 'potato': 0.057,
+                 'persimmon': 0.100, 'bell_pepper': 0.082}
+OFFICIAL_LABEL_ALIASES = {
+    'cucumber': ['黄瓜', 'cucumber'], 'pear': ['梨子', '梨', 'pear'],
+    'banana': ['香蕉', 'banana'], 'potato': ['土豆', '马铃薯', 'potato'],
+    'persimmon': ['柿子', 'persimmon'], 'bell_pepper': ['红椒', '甜椒', '彩椒', 'bell pepper'],
+}
+OFFICIAL_ZONE_ALIASES = {
+    'zone_green': ['绿色区域', '绿色卡片', '绿区', 'green zone'],
+    'zone_yellow': ['黄色区域', '黄色卡片', '黄区', 'yellow zone'],
+    'zone_red': ['红色区域', '红色卡片', '红区', 'red zone'],
+}
+
+
+def _arc_capsules(length: float, r: float, radius: float, n: int) -> List[Dict[str, Any]]:
+    """
+    Return capsule parts along a planar arc lying on the table (local XY).
+
+    length: overall length including the end caps (m); r: tube radius;
+    radius: arc radius of the center line (bows toward +y); n segments. The
+    footprint is centered on the origin, the bottom at z = 0.
+    """
+    ang = (length - 2.0 * r) / radius
+    a = np.linspace(-ang / 2.0, ang / 2.0, n + 1)
+    pts = np.column_stack([radius * np.sin(a), radius * np.cos(a)])
+    pts -= (pts.max(axis=0) + pts.min(axis=0)) / 2.0
+    parts = []
+    for p0, p1 in zip(pts[:-1], pts[1:]):
+        d = p1 - p0
+        mid = (p0 + p1) / 2.0
+        parts.append({'shape': 'capsule', 'size': [r, float(np.linalg.norm(d)) / 2.0],
+                      'pos': [float(mid[0]), float(mid[1]), r],
+                      'yaw': float(math.atan2(d[1], d[0]))})
+    return parts
+
+
+def _banana_parts() -> List[Dict[str, Any]]:
+    """Return the banana: 180 mm curved tube (r 20 mm) with a brown stem tip."""
+    r = 0.02
+    parts = _arc_capsules(0.15, r, 0.12, 4)
+    last = parts[-1]
+    yaw = last['yaw']
+    t = np.array([math.cos(yaw), math.sin(yaw)])
+    end = np.array(last['pos'][:2]) + t * last['size'][1]
+    tip = end + t * 0.018
+    parts.append({'shape': 'capsule', 'size': [0.006, 0.006],
+                  'pos': [float(tip[0]), float(tip[1]), r], 'yaw': yaw,
+                  'color_bgr': (40, 75, 95)})
+    lo = np.min([np.array(p['pos'][:2]) - p['size'][0] - p['size'][1] for p in parts], axis=0)
+    hi = np.max([np.array(p['pos'][:2]) + p['size'][0] + p['size'][1] for p in parts], axis=0)
+    shift = (lo + hi) / 2.0
+    for p in parts:
+        p['pos'] = [p['pos'][0] - float(shift[0]), p['pos'][1] - float(shift[1]), p['pos'][2]]
+    return parts
+
+
+def official_parts(label: str) -> List[Dict[str, Any]]:
+    """
+    Return the 'compound' parts of an official L2 model (object frame: bottom center, z up).
+
+    Dimensions from the organizers' table: cucumber 260 x 40 mm slightly
+    curved; pear 125 mm tall (stem included), 85 mm bulb, narrower neck;
+    banana 180 x 40 mm curved; potato 100 x 70 x ~55 mm; persimmon 70 mm
+    wide, 50 mm tall with a flat calyx; bell pepper 90 mm tall (stem
+    included), 70 mm wide.
+    """
+    green_stem = (40, 115, 55)
+    if label == 'cucumber':
+        return _arc_capsules(0.26, 0.02, 0.5, 4)
+    if label == 'banana':
+        return _banana_parts()
+    if label == 'pear':
+        return [{'shape': 'sphere', 'size': [0.0425], 'pos': [0.0, 0.0, 0.0425]},
+                {'shape': 'ellipsoid', 'size': [0.027, 0.027, 0.030], 'pos': [0.0, 0.0, 0.078]},
+                {'shape': 'ellipsoid', 'size': [0.020, 0.020, 0.020], 'pos': [0.0, 0.0, 0.097]},
+                {'shape': 'cylinder', 'size': [0.0025, 0.012], 'pos': [0.0, 0.0, 0.119],
+                 'color_bgr': (40, 75, 95)}]
+    if label == 'potato':
+        return [{'shape': 'ellipsoid', 'size': [0.050, 0.035, 0.0275], 'pos': [0.0, 0.0, 0.0275]}]
+    if label == 'persimmon':
+        return [{'shape': 'ellipsoid', 'size': [0.035, 0.035, 0.0235], 'pos': [0.0, 0.0, 0.0235]},
+                {'shape': 'cylinder', 'size': [0.018, 0.003], 'pos': [0.0, 0.0, 0.0485],
+                 'color_bgr': green_stem}]
+    if label == 'bell_pepper':
+        return [{'shape': 'ellipsoid', 'size': [0.032, 0.032, 0.032], 'pos': [0.0, 0.0, 0.032]},
+                {'shape': 'ellipsoid', 'size': [0.035, 0.035, 0.026], 'pos': [0.0, 0.0, 0.052]},
+                {'shape': 'cylinder', 'size': [0.012, 0.004], 'pos': [0.0, 0.0, 0.077],
+                 'color_bgr': green_stem},
+                {'shape': 'cylinder', 'size': [0.005, 0.013], 'pos': [0.0, 0.0, 0.0835],
+                 'color_bgr': green_stem}]
+    raise ValueError('unknown official label %r (expected one of %s)' % (label, OFFICIAL_LABELS))
+
+
+OFFICIAL_COLORS = {'cucumber': (35, 95, 30), 'pear': (60, 190, 170), 'banana': (40, 200, 230),
+                   'potato': (95, 180, 215), 'persimmon': (30, 120, 235),
+                   'bell_pepper': (30, 30, 190)}
+
+# Table layouts. cards: zone name -> card center (x, y) in base XY (m); pick:
+# pick polygon (>= 2 cm from every card); eye_to_hand: (camera position, look-at
+# point); eye_in_hand: observe joints (rad) of the wrist camera. Card corners
+# (TCP 0.085 m) and the release / retreat poses are reachable with the tool
+# leaned outward <= 30 deg (layout_reach_report). The fixed camera sees the
+# pick area and all cards; the wrist camera sees the pick area (cards are
+# taught zones, not observed).
+OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
+    # A: green card left of the pick area, red card right, yellow in front.
+    'A': {'cards': {'zone_green': (0.19, 0.30), 'zone_yellow': (0.49, 0.0),
+                    'zone_red': (0.19, -0.30)},
+          'pick': [[0.15, -0.175], [0.365, -0.175], [0.365, 0.175], [0.15, 0.175]],
+          'eye_to_hand': ((0.60, 0.0, 0.50), (0.36, 0.0, 0.0)),
+          'eye_in_hand': (0.0, 0.486, -0.47, 0.0, 1.168, 0.0)},
+    # B: the three cards in a row in front of the pick area.
+    'B': {'cards': {'zone_green': (0.43, 0.205), 'zone_yellow': (0.43, 0.0),
+                    'zone_red': (0.43, -0.205)},
+          'pick': [[0.16, -0.18], [0.305, -0.23], [0.305, 0.23], [0.16, 0.18]],
+          'eye_to_hand': ((0.60, 0.0, 0.50), (0.36, 0.0, 0.0)),
+          'eye_in_hand': (0.0, 0.486, -0.495, 0.0, 1.168, 0.0)},
+}
+
+
 # ------------------------------------------------------------------ sampling
 EDGE_MARGIN = 0.01        # m, object footprint corners stay this far inside the pick polygon
 REACH_R = (0.17, 0.43)    # m, object centers within the vertical-tool grasp reach
@@ -364,6 +524,11 @@ def _gap_between(a: np.ndarray, b: np.ndarray) -> float:
                                    pa.min(axis=0) - pb.max(axis=0))))
 
 
+def parts_gap(a: Sequence[np.ndarray], b: Sequence[np.ndarray]) -> float:
+    """Return the smallest separation (m, < 0 overlap) between two sets of convex footprints."""
+    return min(_gap_between(p, q) for p in a for q in b)
+
+
 def _inward(poly: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Return (inward unit normals, offsets) so p is inside iff normals @ p - offsets >= 0."""
     n = _edge_normals(poly)
@@ -382,8 +547,15 @@ def _inside(pts: np.ndarray, poly: np.ndarray, margin: float) -> bool:
 
 def _place_random(obj: SimObject, placed: List[SimObject], rng: np.random.Generator,
                   polygon: np.ndarray, gap: float, min_center_dist: float = 0.0,
-                  tries: int = 4000) -> None:
-    """Place obj upright at a random pose inside polygon, gap (m) from every placed object."""
+                  tries: int = 4000, visible: Any = None,
+                  reach: Tuple[float, float] = REACH_R) -> None:
+    """
+    Place obj upright at a random pose inside polygon, gap (m) from every placed object.
+
+    visible: obj -> bool (default fully_visible, the legacy views); reach:
+    (min, max) horizontal radius of the center (m).
+    """
+    visible = fully_visible if visible is None else visible
     lo, hi = polygon.min(axis=0), polygon.max(axis=0)
     llo, lhi = obj.local_aabb()
     ext = lhi[:2] - llo[:2]
@@ -401,11 +573,11 @@ def _place_random(obj: SimObject, placed: List[SimObject], rng: np.random.Genera
             # Half of the tries lay long objects roughly along base y, the
             # long direction of the pick area, which makes dense layouts feasible.
             yaw = math.pi / 2.0 - long_axis + rng.normal(0.0, 0.35)
-        if not REACH_R[0] <= math.hypot(x, y) <= REACH_R[1]:
+        if not reach[0] <= math.hypot(x, y) <= reach[1]:
             continue
         obj.place_upright(x, y, yaw, 0.0)
         fp = _footprint(obj)
-        if not _inside(fp, polygon, EDGE_MARGIN) or not fully_visible(obj):
+        if not _inside(fp, polygon, EDGE_MARGIN) or not visible(obj):
             continue
         c = obj.center_xy()
         rad = float(np.max(np.linalg.norm(fp - c, axis=1)))
@@ -448,6 +620,9 @@ def find_top_down_grasp(world: SimWorld, obj: SimObject, max_width: float = GRIP
     object height below the top (clamped to 8..30 mm), opening
     min(width + open_margin, max_width), like the default grasp config.
     """
+    if obj.shape == 'compound':
+        g = find_grasp(world, obj, max_width, open_margin, steps)
+        return None if g is None else (g['closing'], g['width'])
     c, top, h = obj.center_xy(), obj.top_z(), obj.height()
     z = top - min(max(0.5 * h, 0.008), 0.03)
     best: Optional[Tuple[float, float]] = None
@@ -461,6 +636,80 @@ def find_top_down_grasp(world: SimWorld, obj: SimObject, max_width: float = GRIP
         if ok:
             best = (a, w)
     return best
+
+
+def find_grasp(world: SimWorld, obj: SimObject, max_width: float = GRIPPER_MAX_WIDTH,
+               open_margin: float = 0.02, steps: int = 24, min_depth: float = 0.008,
+               max_depth: float = 0.030, z_step: float = 0.0025, max_checks: int = 48
+               ) -> Optional[Dict[str, Any]]:
+    """
+    Return the narrowest working top-down grasp of obj, or None.
+
+    Result keys: closing (rad), width (m, the section between the pads), x, y,
+    z (TCP, m), depth (m below the top), open (opening used, m). Other shapes:
+    find_top_down_grasp's single height. 'compound' objects: TCP heights
+    min_depth .. max_depth below the top (grasp.min_grasp_depth /
+    max_grasp_depth, at least 8 mm above the bottom) every z_step, closing
+    angles k * pi / steps, the TCP centered on the pad-band section (see
+    SimWorld.check_grasp); a section must fit max_width - 5 mm
+    (grasp.max_object_width default), opening min(width + open_margin,
+    max_width). Narrowest first, then lowest; at most max_checks candidates
+    are checked against the world (neighbors, collisions, slipping).
+    """
+    if obj.shape != 'compound':
+        g = find_top_down_grasp(world, obj, max_width, open_margin, steps)
+        if g is None:
+            return None
+        c, top, h = obj.center_xy(), obj.top_z(), obj.height()
+        z = top - min(max(0.5 * h, 0.008), 0.03)
+        return {'closing': g[0], 'width': g[1], 'x': float(c[0]), 'y': float(c[1]),
+                'z': z, 'depth': top - z, 'open': min(g[1] + open_margin, max_width)}
+    c, top = obj.center_xy(), obj.top_z()
+    cands = [t for t in compound_sections(obj, steps, min_depth, max_depth, z_step)
+             if t[0] <= max_width - 0.005]
+    cands.sort(key=lambda t: (t[0], t[1]))
+    for w, z, a, off in cands[:max_checks]:
+        x = float(c[0] + off * math.cos(a))
+        y = float(c[1] + off * math.sin(a))
+        ow = min(w + open_margin, max_width)
+        ok, info = world.check_grasp(top_down_T(x, y, z, a), ow, 0.0)
+        if ok and info['object'] == obj.name:
+            return {'closing': a, 'width': float(info['width']), 'x': x, 'y': y, 'z': z,
+                    'depth': top - z, 'open': ow}
+    return None
+
+
+def compound_sections(obj: SimObject, steps: int = 24, min_depth: float = 0.008,
+                      max_depth: float = 0.030, z_step: float = 0.0025
+                      ) -> List[Tuple[float, float, float, float]]:
+    """
+    Return the pad-band sections of an object as [(width m, TCP z m, closing rad, offset m)].
+
+    For every TCP z min_depth .. max_depth below the top (at least 8 mm above
+    the bottom, every z_step) and closing angle k * pi / steps through the
+    footprint center: the extent along the closing axis of the material
+    within the pad width (tool x) and GRASP_PAD_HALF of the TCP z, and the
+    offset of its middle from the footprint center along the closing axis.
+    """
+    c, top, bottom = obj.center_xy(), obj.top_z(), obj.bottom_z()
+    pts = obj.surface_points()
+    z_hi = top - min_depth
+    z_lo = max(top - max_depth, bottom + 0.008)
+    n = int(math.floor((z_hi - z_lo) / z_step + 1e-9)) + 1 if z_hi >= z_lo else 0
+    zs = [z_lo + k * z_step for k in range(n)]
+    rel = pts[:, :2] - c
+    out = []
+    for k in range(steps):
+        a = k * math.pi / steps
+        along_x = rel @ np.array([-math.sin(a), math.cos(a)])   # tool x of top_down_T(.., a)
+        along_y = rel @ np.array([math.cos(a), math.sin(a)])    # tool y (closing axis)
+        in_pad = np.abs(along_x) <= FINGER_SIZE[0] / 2.0
+        for z in zs:
+            sel = in_pad & (np.abs(pts[:, 2] - z) <= GRASP_PAD_HALF)
+            if np.any(sel):
+                lo, hi = float(along_y[sel].min()), float(along_y[sel].max())
+                out.append((round(hi - lo, 6), z, a, (lo + hi) / 2.0))
+    return out
 
 
 def _check_graspable(objects: List[SimObject]) -> List[SimObject]:
@@ -538,22 +787,528 @@ def _catalog_objects(chosen: List[str], rng: np.random.Generator, polygon: np.nd
     return _check_graspable(objs)
 
 
+# ------------------------------------------------------- official scenarios
+OFFICIAL_GAP = {'normal': 0.015, 'hard': 0.008}   # m, footprint gap between L2 models
+OFFICIAL_ATTEMPTS = 45               # layout attempts (gaps shrink after each third)
+OFFICIAL_TRIES = 200                 # random poses tried per object and attempt
+PACK_JITTER = 0.03                   # m, random slack added when packing L2 models
+CUBE_GAP = 0.03                      # m, footprint gap between separate L1 cubes
+CUBE_MIN_CENTER_DIST = 0.08          # m
+OFFICIAL_REACH_R = (0.15, 0.45)      # m, horizontal radius of the object centers
+CATEGORIES = {'cucumber': 'vegetable', 'pear': 'fruit', 'banana': 'fruit',
+              'potato': 'vegetable', 'persimmon': 'fruit', 'bell_pepper': 'vegetable'}
+# Default config values used by the reach report (place.release_height,
+# place.retreat_height, grasp.approach_height) and the TCP z of a 50 mm cube released
+# there, used for the card corners.
+RELEASE_HEIGHT = 0.06
+RETREAT_HEIGHT = 0.10
+APPROACH_HEIGHT = 0.08
+CARD_CHECK_Z = RELEASE_HEIGHT + CUBE_EDGE / 2.0
+MAX_TILT_DEG = 30.0                  # config robot.workspace.max_tilt_from_down_deg
+
+
+def official_zones(layout: str = 'A') -> List[SimZone]:
+    """Return the three flat 0.20 m cards of a table layout (OFFICIAL_LAYOUTS)."""
+    lay = OFFICIAL_LAYOUTS[layout]
+    out = []
+    for name in OFFICIAL_ZONE_NAMES:
+        color = name[len('zone_'):]
+        c = lay['cards'][name]
+        yaw = float(c[2]) if len(c) > 2 else 0.0
+        out.append(SimZone(name, (c[0], c[1], 0.0), (CARD_SIZE, CARD_SIZE), yaw,
+                           CARD_COLORS[color], 0.0, color))
+    return out
+
+
+def official_T_base_camera(layout: str = 'A') -> np.ndarray:
+    """Return T_base_camera of the fixed (eye-to-hand) camera of a table layout."""
+    eye, target = OFFICIAL_LAYOUTS[layout]['eye_to_hand']
+    return look_at(eye, target)
+
+
+@functools.lru_cache(maxsize=4)
+def official_observe(layout: str = 'A'
+                     ) -> Tuple[Tuple[float, ...], Tuple[Tuple[float, ...], ...]]:
+    """Return (observe joints, T_base_camera) of the wrist camera of a table layout."""
+    q = tuple(float(v) for v in OFFICIAL_LAYOUTS[layout]['eye_in_hand'])
+    if not within_limits(q, 0.02):
+        raise RuntimeError('layout %s: eye-in-hand observe joints outside the limits' % layout)
+    T = piper_fk(q) @ eye_in_hand_T_flange_camera()
+    return q, tuple(tuple(float(v) for v in row) for row in T)
+
+
+@functools.lru_cache(maxsize=4)
+def official_views(layout: str = 'A') -> Tuple[Tuple[np.ndarray, int], ...]:
+    """Return (T_camera_base, max image row) of both mounts' observe views of a layout."""
+    eih = np.array(official_observe(layout)[1])
+    h = DEFAULT_INTRINSICS['height']
+    return ((inv_T(official_T_base_camera(layout)), h - VIEW_MARGIN_PX),
+            (inv_T(eih), h - EYE_IN_HAND_BOTTOM_PX))
+
+
+def _image_margin(pts: np.ndarray, T_cb: np.ndarray, v_max: float) -> float:
+    """Return the smallest distance (px) of projected points inside the image (< 0 outside)."""
+    d = DEFAULT_INTRINSICS
+    pc = np.asarray(pts, dtype=float) @ T_cb[:3, :3].T + T_cb[:3, 3]
+    if np.any(pc[:, 2] <= 0.05):
+        return -math.inf
+    u = d['fx'] * pc[:, 0] / pc[:, 2] + d['cx']
+    v = d['fy'] * pc[:, 1] / pc[:, 2] + d['cy']
+    return float(min(u.min(), d['width'] - 1 - u.max(), v.min(), v_max - v.max()))
+
+
+def layout_view_report(layout: str = 'A') -> Dict[str, Dict[str, float]]:
+    """
+    Return the image margins (px, < 0 = outside) of the pick area and the cards.
+
+    {mount: {'pick': pick polygon corners on the table, 'cards': every card
+    corner}}. The wrist view excludes its bottom EYE_IN_HAND_BOTTOM_PX rows
+    (fingers); from a reachable observe pose it cannot also see the cards,
+    which are taught zones there.
+    """
+    pick = np.array([[x, y, 0.0] for x, y in OFFICIAL_LAYOUTS[layout]['pick']])
+    cards = np.array([[c[0], c[1], 0.0] for z in official_zones(layout)
+                      for c in z.corners_xy()])
+    out = {}
+    for mount, (T_cb, v_max) in zip(MOUNTS, official_views(layout)):
+        out[mount] = {'pick': round(_image_margin(pick, T_cb, v_max), 1),
+                      'cards': round(_image_margin(cards, T_cb, v_max), 1)}
+    return out
+
+
+def official_cube(color: str, rng: Optional[np.random.Generator] = None,
+                  edge: Optional[float] = None, name: Optional[str] = None) -> SimObject:
+    """Return an L1 foam cube (edge CUBE_EDGE +- CUBE_EDGE_TOL drawn from rng, else edge)."""
+    if edge is None:
+        edge = (CUBE_EDGE if rng is None else
+                float(rng.uniform(CUBE_EDGE - CUBE_EDGE_TOL, CUBE_EDGE + CUBE_EDGE_TOL)))
+    base = CUBE_COLORS[color]
+    return SimObject(name or '%s_cube' % color, color, 'box', (edge, edge, edge),
+                     base if rng is None else _jitter(base, rng), np.eye(4), mass=CUBE_MASS,
+                     material='foam')
+
+
+def official_model(name: str, label: str, rng: Optional[np.random.Generator] = None
+                   ) -> SimObject:
+    """Return an official L2 plastic model ('compound'; color jittered with rng)."""
+    base = OFFICIAL_COLORS[label]
+    return SimObject(name, label, 'compound', official_parts(label),
+                     base if rng is None else _jitter(base, rng), np.eye(4),
+                     mass=OFFICIAL_MASS[label], material='plastic')
+
+
+def _probe(label: str) -> SimObject:
+    """Return an isolated object of a class at (0.30, 0) (L1 colors: a 52 mm cube)."""
+    if label in OFFICIAL_LABELS:
+        obj = official_model('probe', label)
+    else:
+        obj = official_cube(label if label in CUBE_COLORS else 'red',
+                            edge=CUBE_EDGE + CUBE_EDGE_TOL, name='probe')
+    obj.place_upright(0.30, 0.0, 0.0, 0.0)
+    return obj
+
+
+@functools.lru_cache(maxsize=128)
+def _class_grasp(label: str, max_width: float) -> Tuple[Optional[Tuple[Tuple[str, float], ...]],
+                                                        str]:
+    obj = _probe(label)
+    world = SimWorld(objects=[obj])
+    g = find_grasp(world, obj, max_width, max_checks=400)
+    if g is not None:
+        g = dict(g, held_offset=g['z'] - obj.bottom_z(), height=obj.height(),
+                 footprint=float(np.max(obj.aabb()[1][:2] - obj.aabb()[0][:2])))
+        return tuple(sorted((k, float(v)) for k, v in g.items())), ''
+    return None, _no_grasp_reason(world, obj, max_width)
+
+
+def class_grasp(label: str, max_width: float = GRIPPER_MAX_WIDTH
+                ) -> Tuple[Optional[Dict[str, float]], str]:
+    """
+    Return (grasp of an isolated object of a class or None, reason).
+
+    The grasp is find_grasp's dict plus held_offset (TCP height above the
+    object bottom, m), height and footprint (largest horizontal extent, m).
+    L1 color labels mean a 52 mm (largest tolerated) foam cube. reason is ''
+    when a grasp exists, else why none does with this max_width (m).
+    """
+    g, why = _class_grasp(str(label), round(float(max_width), 6))
+    return (None if g is None else dict(g)), why
+
+
+def _no_grasp_reason(world: SimWorld, obj: SimObject, max_width: float) -> str:
+    """Return why find_grasp found no grasp of an isolated object."""
+    fit = max_width - 0.005
+    if obj.shape != 'compound':
+        w = min(obj.footprint_extent((math.cos(a), math.sin(a)))
+                for a in np.linspace(0.0, math.pi, 24, endpoint=False))
+        return ('too_wide: narrowest width %.3f m > %.3f m (max_width %.3f m - 5 mm)'
+                % (w, fit, max_width))
+    secs = compound_sections(obj)
+    if not secs:
+        return 'no_material: nothing between the pads at any grasp height'
+    w_min = min(t[0] for t in secs)
+    if w_min > fit:
+        return ('too_wide: narrowest section between the pads %.3f m > %.3f m (max_width '
+                '%.3f m - 5 mm) at every grasp height (8-30 mm below the top)'
+                % (w_min, fit, max_width))
+    w, z, a, off = min((t for t in secs if t[0] <= fit), key=lambda t: (t[0], t[1]))
+    c = obj.center_xy()
+    T = top_down_T(c[0] + off * math.cos(a), c[1] + off * math.sin(a), z, a)
+    _ok, info = world.check_grasp(T, min(w + 0.02, max_width), 0.0)
+    return ('%s: the sections that fit (narrowest %.3f m, %.0f mm below the top) are not '
+            'held (%s)' % (info.get('reason') or 'no_grasp', w, 1000.0 * (obj.top_z() - z),
+                           ', '.join('%s %s' % (k, info[k]) for k in ('extent', 'taper_deg',
+                                                                       'collided')
+                                     if k in info) or 'see check_grasp'))
+
+
+def official_graspability(max_width: float = GRIPPER_MAX_WIDTH) -> Dict[str, str]:
+    """Return label -> '' (an isolated object can be grasped top-down) or the reason not."""
+    return {lab: class_grasp(lab, max_width)[1] for lab in ('cube',) + OFFICIAL_LABELS}
+
+
+def _require_grasps(objects: List[SimObject], max_width: float) -> List[SimObject]:
+    """Raise RuntimeError unless every object of a graspable class has a grasp among the others."""
+    world = SimWorld(objects=objects)
+    for obj in objects:
+        if class_grasp(obj.label, max_width)[0] is None:
+            continue
+        if find_grasp(world, obj, max_width) is None:
+            raise RuntimeError('%s has no collision-free grasp' % obj.name)
+    return objects
+
+
+def _official_l1_objects(rng: np.random.Generator, polygon: np.ndarray, hard: bool,
+                         max_width: float, visible: Any, gap_scale: float = 1.0
+                         ) -> List[SimObject]:
+    """Return the cubes of an official L1 scene ('hard': distractors, two touching)."""
+    cubes = [official_cube(str(c), rng) for c in rng.permutation(L1_TARGETS)]
+    extra: List[SimObject] = []
+    if hard:
+        n = int(rng.integers(1, 3))
+        extra = [official_cube(str(c), rng)
+                 for c in rng.choice(L1_DISTRACTORS, n, replace=False)]
+    gap = CUBE_GAP * gap_scale
+    kw = dict(tries=300, visible=visible, reach=OFFICIAL_REACH_R)
+    objects: List[SimObject] = []
+    rest = cubes + extra
+    if hard:
+        a, b = cubes[0], cubes[1]
+        _place_random(a, objects, rng, polygon, gap, CUBE_MIN_CENTER_DIST, **kw)
+        objects.append(a)
+        side = float(rng.choice([-1.0, 1.0]))
+        lat = float(rng.uniform(-0.3, 0.3)) * a.size[0]
+        off = a.T_base_obj[:3, :3] @ np.array([side * (a.size[0] + b.size[0]) / 2.0, lat, 0.0])
+        c = a.center_xy() + off[:2]
+        b.place_upright(c[0], c[1], a.yaw(), 0.0)
+        if (not _inside(_footprint(b), polygon, EDGE_MARGIN)
+                or not OFFICIAL_REACH_R[0] <= math.hypot(c[0], c[1]) <= OFFICIAL_REACH_R[1]
+                or not visible(b)):
+            raise RuntimeError('touching cube outside the pick area')
+        objects.append(b)
+        rest = cubes[2:] + extra
+    for obj in rest:
+        _place_random(obj, objects, rng, polygon, gap, CUBE_MIN_CENTER_DIST, **kw)
+        objects.append(obj)
+    return _require_grasps(objects, max_width)
+
+
+def _place_packed(obj: SimObject, placed: List[SimObject], rng: np.random.Generator,
+                  polygon: np.ndarray, gap: float, visible: Any,
+                  reach: Tuple[float, float] = OFFICIAL_REACH_R, tries: int = OFFICIAL_TRIES,
+                  jitter: float = PACK_JITTER) -> None:
+    """
+    Place obj upright at the tightest of `tries` random valid poses.
+
+    A pose is valid inside polygon (EDGE_MARGIN), within reach, visible and
+    gap (m) from every placed footprint. Its slack is the smallest clearance
+    to the polygon edge or a placed footprint beyond the required margin;
+    the pose with the least slack plus a random jitter (m) wins, so objects
+    pack against the edges and each other and dense official layouts fit.
+    Elongated objects take a yaw along the polygon's longer side (+- 0.35
+    rad) in half of the tries. Raises RuntimeError when no pose is valid.
+    """
+    lo, hi = polygon.min(axis=0), polygon.max(axis=0)
+    llo, lhi = obj.local_aabb()
+    ext = lhi[:2] - llo[:2]
+    elongated = float(ext.max()) > 2.0 * float(ext.min())
+    long_axis = 0.0 if ext[0] >= ext[1] else math.pi / 2.0
+    side = 0.0 if (hi[0] - lo[0]) >= (hi[1] - lo[1]) else math.pi / 2.0
+    n_in, off_in = _inward(polygon)
+    others = []
+    for o in placed:
+        fps = o.footprint_polygons()
+        c = o.center_xy()
+        others.append((c, fps, float(np.max(np.linalg.norm(np.vstack(fps) - c, axis=1)))))
+    best = None
+    for _ in range(tries):
+        x, y = rng.uniform(lo[0], hi[0]), rng.uniform(lo[1], hi[1])
+        yaw = rng.uniform(-math.pi, math.pi)
+        if elongated and rng.random() < 0.5:
+            yaw = side - long_axis + rng.normal(0.0, 0.35)
+        noise = jitter * rng.random()
+        if not reach[0] <= math.hypot(x, y) <= reach[1]:
+            continue
+        obj.place_upright(x, y, yaw, 0.0)
+        fps = obj.footprint_polygons()
+        allp = np.vstack(fps)
+        edge = float(np.min(allp @ n_in.T - off_in)) - EDGE_MARGIN
+        if edge < 0.0:
+            continue
+        c = obj.center_xy()
+        rad = float(np.max(np.linalg.norm(allp - c, axis=1)))
+        slack = edge
+        for oc, ofps, orad in others:
+            d = float(np.linalg.norm(oc - c))
+            if d >= rad + orad + gap + slack:
+                continue
+            slack = min(slack, parts_gap(fps, ofps) - gap)
+            if slack < 0.0:
+                break
+        if slack < 0.0 or (best is not None and slack + noise >= best[0]):
+            continue
+        if not visible(obj):
+            continue
+        best = (slack + noise, x, y, yaw)
+    if best is None:
+        raise RuntimeError('could not place %s without overlap' % obj.name)
+    obj.place_upright(best[1], best[2], best[3], 0.0)
+
+
+def _official_models(chosen: List[str], rng: np.random.Generator, polygon: np.ndarray,
+                     gap: float, max_width: float, visible: Any, gap_scale: float = 1.0
+                     ) -> List[SimObject]:
+    """Return the L2 models of chosen (labels), packed largest first (_place_packed)."""
+    objs = [official_model('%s_%d' % (lab, i), lab, rng) for i, lab in enumerate(chosen)]
+    placed: List[SimObject] = []
+    size = {o.name: float(np.prod(o.local_aabb()[1][:2] - o.local_aabb()[0][:2])) for o in objs}
+    for obj in sorted(objs, key=lambda o: -size[o.name]):
+        _place_packed(obj, placed, rng, polygon, gap * gap_scale, visible)
+        placed.append(obj)
+    return _require_grasps(objs, max_width)
+
+
+def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout: str,
+                       gripper_width: Optional[float]) -> Tuple[SimWorld, Dict[str, Any]]:
+    """Build a scene from the official materials (see make_scenario)."""
+    width = GRIPPER_MAX_WIDTH if gripper_width is None else float(gripper_width)
+    rng = np.random.default_rng([int(seed), TASKS.index(task), DIFFICULTIES.index(difficulty),
+                                 LAYOUTS.index(layout), 2026])
+    lay = OFFICIAL_LAYOUTS[layout]
+    polygon = np.array(lay['pick'], dtype=float)
+    hard = difficulty == 'hard'
+    views = official_views(layout)
+
+    def visible(obj: SimObject) -> bool:
+        return fully_visible(obj, views) or fully_visible(obj, views, exact=True)
+
+    zones = official_zones(layout)
+    info: Dict[str, Any] = {'task': task, 'seed': int(seed), 'mount': mount,
+                            'difficulty': difficulty, 'materials': 'official',
+                            'layout': layout, 'gripper_width': gripper_width}
+    dup = None
+    if task == 'L1':
+        objects = _retry_layout(lambda g: _official_l1_objects(rng, polygon, hard, width,
+                                                               visible, g), OFFICIAL_ATTEMPTS)
+        present = {o.label for o in objects}
+        labels = list(L1_TARGETS) + [c for c in L1_KNOWN_DISTRACTORS if c in present]
+        class_to_zone = dict(OFFICIAL_L1_CLASS_TO_ZONE)
+        categories: Dict[str, str] = {}
+        info['time_limit_s'] = 180.0
+    else:
+        if task == 'L2':
+            chosen = [str(v) for v in rng.permutation(OFFICIAL_LABELS)]
+        else:
+            ok = [k for k in OFFICIAL_LABELS
+                  if k != 'cucumber' and class_grasp(k, width)[0] is not None]
+            dup = str(rng.choice(ok)) if ok else 'banana'
+            rest = [k for k in OFFICIAL_LABELS if k != dup]
+            chosen = [dup, dup] + [str(v) for v in rng.choice(rest, 4, replace=False)]
+            chosen = [chosen[i] for i in rng.permutation(len(chosen))]
+        gap = OFFICIAL_GAP[difficulty]
+        objects = _retry_layout(lambda g: _official_models(chosen, rng, polygon, gap, width,
+                                                           visible, g), OFFICIAL_ATTEMPTS)
+        labels = [k for k in OFFICIAL_LABELS if k in chosen]
+        categories = {k: CATEGORIES[k] for k in labels}
+        class_to_zone = ({k: OFFICIAL_CLASS_TO_ZONE[k] for k in labels} if task == 'L2'
+                         else {})
+        info['time_limit_s'] = 300.0
+    world = SimWorld(table_z=0.0, objects=objects, zones=zones, seed=int(seed))
+    why = {o.label: class_grasp(o.label, width)[1] for o in objects}
+    info.update(labels=labels, class_to_zone=class_to_zone, categories=categories,
+                zones={z.name: z.to_zone() for z in zones},
+                pick_polygon=[[float(v) for v in p] for p in lay['pick']],
+                intrinsics=default_intrinsics(),
+                objects=[{'name': o.name, 'label': o.label} for o in objects],
+                required=sum(1 for o in objects if o.label in class_to_zone),
+                ungraspable={k: v for k, v in sorted(why.items()) if v})
+    info['graspable_required'] = sum(1 for o in objects
+                                     if o.label in class_to_zone and not why[o.label])
+    if task == 'L3':
+        info['required'] = 5
+        info.update(_official_l3_instructions(world, rng, str(dup), why))
+        info['graspable_required'] = sum(1 for sp in info['instruction_specs']
+                                         if not why[sp['label']])
+    if mount == 'eye_to_hand':
+        info['T_base_camera'] = official_T_base_camera(layout)
+        info['observe_joints'] = [float(v) for v in EYE_TO_HAND_PARK_JOINTS]
+    else:
+        q, T_obs = official_observe(layout)
+        info['T_flange_camera'] = eye_in_hand_T_flange_camera()
+        info['T_base_camera_observe'] = np.array(T_obs)
+        info['observe_joints'] = list(q)
+    return world, info
+
+
+def _official_l3_instructions(world: SimWorld, rng: np.random.Generator, dup: str,
+                              why: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Return referee-style instructions for an official L3 world and the expected parse.
+
+    The duplicated class dup gets leftmost / rightmost (left = base +y), then
+    three other objects (graspable classes first) 'any' / 'nearest' / 'any';
+    the zones are a seeded permutation of the cards.
+    """
+    zh_zone = {'zone_green': '绿色区域', 'zone_yellow': '黄色区域', 'zone_red': '红色区域'}
+    zones = [str(z) for z in rng.permutation(OFFICIAL_ZONE_NAMES)]
+    pair = sorted((o for o in world.objects if o.label == dup),
+                  key=lambda o: float(o.center_xy()[1]))
+    zh = OFFICIAL_LABEL_ALIASES[dup][0]
+    specs = [
+        dict(text='把最左边的%s放到%s' % (zh, zh_zone[zones[0]]), label=dup,
+             selector='leftmost', zone=zones[0], count=1, object=pair[-1].name),
+        dict(text='把最右边的%s放到%s' % (zh, zh_zone[zones[1]]), label=dup,
+             selector='rightmost', zone=zones[1], count=1, object=pair[0].name),
+    ]
+    others = sorted((o for o in world.objects if o.label != dup),
+                    key=lambda o: (bool(why.get(o.label)), o.name))
+    for k, obj in enumerate(others[:3]):
+        zone = zones[(k + 2) % 3]
+        zh = OFFICIAL_LABEL_ALIASES[obj.label][0]
+        if k == 1:
+            text, sel = '把离机器人最近的%s放到%s' % (zh, zh_zone[zone]), 'nearest'
+        else:
+            text, sel = '把%s放到%s' % (zh, zh_zone[zone]), 'any'
+        specs.append(dict(text=text, label=obj.label, selector=sel, zone=zone, count=1,
+                          object=obj.name))
+    return {'instructions': [s['text'] for s in specs], 'instruction_specs': specs,
+            'label_aliases': {k: list(v) for k, v in OFFICIAL_LABEL_ALIASES.items()},
+            'zone_aliases': {k: list(v) for k, v in OFFICIAL_ZONE_ALIASES.items()}}
+
+
+@functools.lru_cache(maxsize=16)
+def _reach_tilt(x: float, y: float, z: float, tcp_offset: Tuple[float, ...],
+                step_deg: float) -> Optional[float]:
+    """Return the least outward lean (deg, multiple of step_deg) that makes a pose reachable."""
+    from ..robot.kinematics import PiperKinematics
+    T = top_down_T(x, y, z, math.atan2(y, x) + math.pi / 2.0)
+    res = PiperKinematics().solve_tcp_with_tilt(T, pose6_to_T(tcp_offset),
+                                                max_tilt=math.radians(MAX_TILT_DEG),
+                                                step=math.radians(step_deg))
+    return None if res is None else round(math.degrees(res[2]), 3)
+
+
+def _release_xys(zone: SimZone, footprint: float) -> List[Tuple[float, float]]:
+    """Return the zone center and the PlacePlanner release slots for this footprint."""
+    from ..perception.grasp import release_slots
+    c = (float(zone.center[0]), float(zone.center[1]))
+    return [c] + [(float(x), float(y)) for x, y in release_slots(zone.to_zone(), footprint)]
+
+
+def layout_reach_report(layout: str = 'A', gripper_width: Optional[float] = None,
+                        tcp_offset: Sequence[float] = DEFAULT_TCP_OFFSET,
+                        step_deg: float = 5.0) -> Dict[str, Any]:
+    """
+    Return the reach margins of a table layout (SafeArm lean rule, PiperKinematics).
+
+    Every pose is top-down with the closing axis tangential, leaned outward
+    by the least multiple of step_deg up to MAX_TILT_DEG that is reachable.
+    Checked: each card's corners at CARD_CHECK_Z; for every class mapped to
+    the card (L1 cube and L2 models that gripper_width can grasp) the zone
+    center and release slots at the release TCP z (RELEASE_HEIGHT + held
+    offset) and the retreat (+ RETREAT_HEIGHT); the pick polygon corners at
+    the highest grasp TCP z and at the highest pre-grasp z (top +
+    APPROACH_HEIGHT). Returns {'zones': {name: entry}, 'pick': entry, 'ok':
+    bool, 'n_poses'} with entry {'min_margin_deg': MAX_TILT_DEG - largest
+    lean needed (None if a pose is unreachable), 'worst': [x, y, z, lean or
+    None], 'unreachable': [[x, y, z], ...]}.
+    """
+    width = GRIPPER_MAX_WIDTH if gripper_width is None else float(gripper_width)
+    off = tuple(float(v) for v in tcp_offset)
+    grasps = {lab: class_grasp(lab, width)[0] for lab in ('red',) + OFFICIAL_LABELS}
+    by_zone: Dict[str, List[Dict[str, float]]] = {n: [] for n in OFFICIAL_ZONE_NAMES}
+    for lab, zname in list(OFFICIAL_L1_CLASS_TO_ZONE.items()) + list(
+            OFFICIAL_CLASS_TO_ZONE.items()):
+        g = grasps['red' if lab in L1_TARGETS else lab]
+        if g is not None:
+            by_zone[zname].append(g)
+    n = [0]
+
+    def entry(poses: List[Tuple[float, float, float]]) -> Dict[str, Any]:
+        res = []
+        for x, y, z in dict.fromkeys((round(x, 4), round(y, 4), round(z, 4))
+                                     for x, y, z in poses):
+            res.append((x, y, z, _reach_tilt(x, y, z, off, float(step_deg))))
+        n[0] += len(res)
+        bad = [[x, y, z] for x, y, z, t in res if t is None]
+        worst = max(res, key=lambda r: math.inf if r[3] is None else r[3])
+        return {'min_margin_deg': None if bad else round(MAX_TILT_DEG - worst[3], 1),
+                'worst': [worst[0], worst[1], worst[2], worst[3]], 'unreachable': bad}
+
+    out: Dict[str, Any] = {'layout': layout, 'gripper_width': width, 'tcp_offset': list(off),
+                           'zones': {}}
+    for zone in official_zones(layout):
+        poses = [(float(c[0]), float(c[1]), CARD_CHECK_Z) for c in zone.corners_xy()]
+        for g in by_zone[zone.name]:
+            z_rel = zone.floor_z + RELEASE_HEIGHT + g['held_offset']
+            for x, y in _release_xys(zone, g['footprint']):
+                poses += [(x, y, z_rel), (x, y, z_rel + RETREAT_HEIGHT)]
+        out['zones'][zone.name] = entry(poses)
+    ok_g = [g for g in grasps.values() if g is not None]
+    z_grasp = max(g['z'] for g in ok_g)
+    z_pre = max(g['height'] for g in ok_g) + APPROACH_HEIGHT
+    corners = OFFICIAL_LAYOUTS[layout]['pick']
+    out['pick'] = entry([(float(x), float(y), z) for x, y in corners for z in (z_grasp, z_pre)])
+    out['ok'] = all(e['min_margin_deg'] is not None
+                    for e in list(out['zones'].values()) + [out['pick']])
+    out['n_poses'] = n[0]
+    return out
+
+
 # ----------------------------------------------------------------- scenarios
 def make_scenario(task: str, seed: int, mount: str = 'eye_to_hand',
-                  difficulty: str = 'normal') -> Tuple[SimWorld, Dict[str, Any]]:
+                  difficulty: str = 'normal', materials: str = 'official', layout: str = 'A',
+                  gripper_width: Optional[float] = None) -> Tuple[SimWorld, Dict[str, Any]]:
     """
     Build a seeded scene. Return (SimWorld, info).
 
-    task: 'L1' (3 colored cubes, 3 colored mats), 'L2' (6 fruit / vegetable
-    models, 2 walled bins), 'L3' (L2-like objects with 2 apples, 3 colored
-    trays, info['instructions']). difficulty 'hard': L1 adds two touching
-    cubes and a yellow distractor; L2 uses smaller gaps and every catalog
-    label. info keys: task, seed, mount, difficulty, labels, class_to_zone,
-    categories, zones (name -> core Zone), pick_polygon, intrinsics
-    (CameraIntrinsics), T_base_camera (eye_to_hand) or T_flange_camera and
-    T_base_camera_observe (eye_in_hand), observe_joints, objects,
-    required, time_limit_s, plus for L3 instructions / instruction_specs /
-    label_aliases / zone_aliases. Deterministic for a given argument set.
+    materials 'official' (default): the organizers' materials. L1: three
+    50 mm foam cubes (red / green / yellow) for three flat 0.20 m cards
+    zone_red / zone_green / zone_yellow; 'hard' adds 1-2 distractor cubes
+    (pink / orange / blue / purple) and two touching cubes. L2: the six
+    plastic models (cucumber, pear, banana, potato, persimmon, bell_pepper,
+    'compound' shapes) for the cards (OFFICIAL_CLASS_TO_ZONE); 'hard' uses
+    smaller gaps. L3: L2 objects with one class twice and referee-style
+    instructions. layout: table layout 'A' or 'B' (LAYOUTS: card positions,
+    pick polygon, cameras). gripper_width: robot.gripper.max_width (m) the
+    scene is checked against (None = GRIPPER_MAX_WIDTH, the standard
+    gripper); objects of a class that no top-down grasp fits are still
+    placed and listed in info['ungraspable'] (label -> reason).
+
+    materials 'legacy': the old made-up catalog, exactly as before (layout
+    and gripper_width only go to info / the overlay): L1 3 colored cubes,
+    3 mats ('hard': two touching cubes and a yellow distractor); L2 6 fruit /
+    vegetable models, 2 walled bins ('hard': smaller gaps, every catalog
+    label); L3 L2-like objects with 2 apples, 3 trays.
+
+    info keys: task, seed, mount, difficulty, materials, layout,
+    gripper_width, labels, class_to_zone, categories, zones (name -> core
+    Zone), pick_polygon, intrinsics (CameraIntrinsics), T_base_camera
+    (eye_to_hand) or T_flange_camera and T_base_camera_observe
+    (eye_in_hand), observe_joints, objects, required, time_limit_s, plus for
+    L3 instructions / instruction_specs / label_aliases / zone_aliases, and
+    for official scenes ungraspable and graspable_required (targets some
+    top-down grasp fits). Deterministic for a given argument set.
     """
     if task not in TASKS:
         raise ValueError('task must be one of %s, got %r' % (TASKS, task))
@@ -561,6 +1316,25 @@ def make_scenario(task: str, seed: int, mount: str = 'eye_to_hand',
         raise ValueError('mount must be one of %s, got %r' % (MOUNTS, mount))
     if difficulty not in DIFFICULTIES:
         raise ValueError('difficulty must be one of %s, got %r' % (DIFFICULTIES, difficulty))
+    if materials not in MATERIALS:
+        raise ValueError('materials must be one of %s, got %r' % (MATERIALS, materials))
+    if layout not in LAYOUTS:
+        raise ValueError('layout must be one of %s, got %r' % (LAYOUTS, layout))
+    gw = None
+    if gripper_width is not None:
+        gw = float(gripper_width)
+        if not math.isfinite(gw) or not 0.03 <= gw <= 0.20:
+            raise ValueError('gripper_width must be in [0.03, 0.20] m, got %r' % (gripper_width,))
+    if materials == 'legacy':
+        world, info = _legacy_scenario(task, seed, mount, difficulty)
+        info.update(materials='legacy', layout=layout, gripper_width=gw)
+        return world, info
+    return _official_scenario(task, int(seed), mount, difficulty, layout, gw)
+
+
+def _legacy_scenario(task: str, seed: int, mount: str, difficulty: str
+                     ) -> Tuple[SimWorld, Dict[str, Any]]:
+    """Build a scene from the legacy catalog (see make_scenario)."""
     rng = np.random.default_rng([int(seed), TASKS.index(task), DIFFICULTIES.index(difficulty)])
     polygon = np.array(DEFAULT_PICK_POLYGON, dtype=float)
     hard = difficulty == 'hard'

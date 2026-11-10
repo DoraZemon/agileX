@@ -229,6 +229,10 @@ def fault_point(spec: Dict[str, Any], required: int) -> Dict[str, int]:
                                  TASKS.index(spec['task']), MOUNTS.index(spec['mount']),
                                  DIFFICULTIES.index(spec['difficulty'])])
     n = max(1, int(required))
+    if fault == 'grasp_miss':
+        # Arm before a close even when fixed-camera picks omit the observe move.
+        # A continuous pick has 6 motions and 3 gripper commands, after 2 prep calls.
+        return {'at_call': 3 + 9 * int(rng.integers(n))}
     if fault in ARM_FAULTS:
         # 2 preparation commands, then about CALLS_PER_PICK per pick: hit the first 80 %.
         return {'at_call': int(rng.integers(3, 3 + max(1, int(0.8 * CALLS_PER_PICK * n))))}

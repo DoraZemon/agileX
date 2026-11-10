@@ -27,7 +27,10 @@ from ..core.types import Zone
 
 _log = logging.getLogger('cube_task.sim.world')
 
-SHAPES = ('box', 'sphere', 'ellipsoid', 'cylinder', 'capsule_chain', 'sphere_cluster')
+SHAPES = ('box', 'sphere', 'ellipsoid', 'cylinder', 'capsule_chain', 'sphere_cluster',
+          'compound')
+# Part shapes of a 'compound' object -> number of size values (see SimObject).
+COMPOUND_PARTS = {'sphere': 1, 'ellipsoid': 3, 'cylinder': 2, 'box': 3, 'capsule': 2}
 
 # Gripper geometry, in the TCP frame (m). Finger box: (tool x = pad width,
 # tool y = thickness, tool z = length). The inner finger faces are at
@@ -43,6 +46,12 @@ FINGER_COLOR_BGR = (70, 70, 75)
 # Default grasp tolerances (see SimWorld.try_grasp).
 GRASP_TOL_X = 0.008          # m, TCP offset from the footprint center along tool x
 GRASP_TOL_Y_FRAC = 0.3       # fraction of the footprint half extent along tool y
+# Half height (m) of the finger pad band around the TCP z in which a 'compound' object's
+# cross-section is measured (held width, centering); matches grasp.pad_half.
+GRASP_PAD_HALF = 0.015
+# A 'compound' target whose widest section in the pad band is at the lower pad edge slips
+# out when the surface above it tapers inward steeper than this (deg): a dome, not a neck.
+GRASP_SLIP_TAPER_DEG = 30.0
 
 WALL_THICKNESS = 0.004       # m, walls of binned zones, outside the zone interior
 SAMPLE_SPACING = 0.0025      # m, surface sample spacing used for grasp geometry
@@ -127,15 +136,23 @@ class SimObject:
       'cylinder' (r, h) with a vertical axis; 'capsule_chain' (r, [(x, y, z), ...])
       rendered as spheres of radius r placed every <= r / 2 along the local
       polyline; 'sphere_cluster' (r, [(x, y, z), ...]) spheres at the given
-      local centers (e.g. a grape bunch).
+      local centers (e.g. a grape bunch); 'compound' [part, ...] where each part
+      is a dict {'shape': 'sphere' | 'ellipsoid' | 'cylinder' | 'box' | 'capsule',
+      'size': sphere [r], ellipsoid [rx, ry, rz], cylinder [r, h] (vertical), box
+      [sx, sy, sz] (full sizes), capsule [r, half_length] (along the part x),
+      'pos': [x, y, z] part center in the object frame, optional 'yaw' (rad about
+      z) and 'color_bgr' (default: the object color)}.
     T_base_obj: object pose in the base frame; origin at the bottom center
-    for the primitive shapes. For point-based shapes the local points define
-    the geometry; scenarios put the bottom at local z = 0.
+    for the primitive shapes. For point-based and compound shapes the local
+    geometry defines it; scenarios put the bottom at local z = 0.
     color_bgr: base color (0..255, OpenCV channel order).
+    mass: optional mass (kg); material: optional material name ('foam' |
+    'plastic'); both are passed through to the physics simulation.
     """
 
     def __init__(self, name: str, label: str, shape: str, size: Sequence[Any],
-                 color_bgr: Sequence[Any], T_base_obj: Any):
+                 color_bgr: Sequence[Any], T_base_obj: Any, mass: Optional[float] = None,
+                 material: Optional[str] = None):
         if not name:
             raise ValueError('SimObject needs a name')
         if shape not in SHAPES:
@@ -147,13 +164,24 @@ class SimObject:
         self.color_bgr = _check_color(color_bgr, 'object %s' % name)
         self._T = check_pose(T_base_obj, 'object %s T_base_obj' % name)
         self.texture_seed = zlib.crc32(self.name.encode('utf-8')) & 0xFFFF
+        self.mass = None if mass is None else _positive(mass, 'object %s mass' % name, 100.0)
+        if material is not None and (not isinstance(material, str) or not material):
+            raise ValueError('object %s: material must be a non-empty string' % name)
+        self.material = material
         self._centers = self._sphere_centers()
+        self._parts = self._compound_frames() if shape == 'compound' else []
         self._local_samples: Optional[np.ndarray] = None
 
     # ----------------------------------------------------------- definition
     @staticmethod
     def _normalize_size(shape: str, size: Sequence[Any]) -> tuple:
         what = 'size of %s' % shape
+        if shape == 'compound':
+            parts = list(size)
+            if not parts:
+                raise ValueError('%s: needs at least one part' % what)
+            return tuple(_normalize_part(p, '%s part %d' % (what, k))
+                         for k, p in enumerate(parts))
         if shape in ('capsule_chain', 'sphere_cluster'):
             if len(size) != 2:
                 raise ValueError('%s: expected (r, [points])' % what)
@@ -174,6 +202,32 @@ class SimObject:
         if self._shape == 'sphere_cluster':
             return np.array(self._size[1], dtype=float)
         return None
+
+    def _compound_frames(self) -> List[Tuple[str, np.ndarray, tuple, Tuple[int, int, int]]]:
+        """Return [(kind, T_obj_part, params, color)] of the compound parts."""
+        out = []
+        for p in self._size:
+            kind, s, pos = p['shape'], p['size'], np.array(p['pos'])
+            color = self.color_bgr if p['color_bgr'] is None else p['color_bgr']
+            R = rot_z(p['yaw'])
+            if kind == 'sphere':
+                out.append(('ellipsoid', make_T(np.eye(3), pos), (s[0],) * 3, color))
+            elif kind == 'cylinder':
+                out.append(('cylinder', make_T(R, pos - np.array([0.0, 0.0, s[1] / 2.0])),
+                            s, color))
+            else:
+                out.append((kind, make_T(R, pos), s, color))
+        return out
+
+    def compound_parts(self) -> List[Tuple[str, np.ndarray, tuple, Tuple[int, int, int]]]:
+        """
+        Return the parts of a 'compound' object as (kind, T_obj_part, params, color).
+
+        kind 'ellipsoid' (params radii, centered), 'box' (full sizes, centered),
+        'cylinder' ((r, h), axis = part z from 0 to h) or 'capsule' ((r,
+        half_length) along the part x, centered). Empty for other shapes.
+        """
+        return [(k, T.copy(), prm, c) for k, T, prm, c in self._parts]
 
     @property
     def shape(self) -> str:
@@ -200,9 +254,12 @@ class SimObject:
 
         Returns a list of ('box', center(3), half(3)), ('ellipsoid', center(3),
         radii(3)), ('cylinder', r, h) (axis = local z, bottom at z = 0) or
-        ('spheres', r, centers Nx3).
+        ('spheres', r, centers Nx3); a 'compound' object returns ('part', kind,
+        T_obj_part, params, color) per part (see compound_parts).
         """
         s = self._size
+        if self._shape == 'compound':
+            return [('part', k, T, prm, c) for k, T, prm, c in self.compound_parts()]
         if self._shape == 'box':
             return [('box', np.array([0.0, 0.0, s[2] / 2.0]), np.array(s) / 2.0)]
         if self._shape == 'sphere':
@@ -216,6 +273,10 @@ class SimObject:
     def local_aabb(self) -> Tuple[np.ndarray, np.ndarray]:
         """Axis-aligned bounds (lo, hi) in the object frame (m)."""
         s = self._size
+        if self._shape == 'compound':
+            e = np.eye(3)
+            return (np.array([-self._compound_support(-e[i]) for i in range(3)]),
+                    np.array([self._compound_support(e[i]) for i in range(3)]))
         if self._shape == 'box':
             return (np.array([-s[0] / 2, -s[1] / 2, 0.0]),
                     np.array([s[0] / 2, s[1] / 2, s[2]]))
@@ -240,6 +301,8 @@ class SimObject:
         o = self._T[:3, 3]
         ul = R.T @ u
         s = self._size
+        if self._shape == 'compound':
+            return float(o @ u + self._compound_support(ul))
         if self._shape == 'box':
             c = o + R @ np.array([0.0, 0.0, s[2] / 2.0])
             return float(c @ u + np.sum(np.abs(ul) * np.array(s) / 2.0))
@@ -253,6 +316,26 @@ class SimObject:
             az = abs(float(ul[2]))
             return float(c @ u + h / 2.0 * az + r * math.sqrt(max(0.0, 1.0 - az * az)))
         return float(np.max(self._centers @ ul) + o @ u + s[0])
+
+    def _compound_support(self, ul: np.ndarray) -> float:
+        """Return max over the compound parts of p . ul (object frame, ul unit)."""
+        best = -math.inf
+        for kind, T, prm, _c in self._parts:
+            a = T[:3, :3].T @ ul
+            c = T[:3, 3]
+            if kind == 'ellipsoid':
+                v = c @ ul + float(np.linalg.norm(np.array(prm) * a))
+            elif kind == 'box':
+                v = c @ ul + float(np.sum(np.abs(a) * np.array(prm) / 2.0))
+            elif kind == 'cylinder':
+                r, h = prm
+                az = abs(float(a[2]))
+                v = ((c + T[:3, 2] * (h / 2.0)) @ ul + h / 2.0 * az
+                     + r * math.sqrt(max(0.0, 1.0 - az * az)))
+            else:
+                v = c @ ul + prm[1] * abs(float(a[0])) + prm[0]
+            best = max(best, float(v))
+        return best
 
     def extent_along(self, axis: Sequence[float]) -> Tuple[float, float]:
         """
@@ -276,6 +359,10 @@ class SimObject:
         R = self._T[:3, :3]
         o = self._T[:3, 3]
         s = self._size
+        if self._shape == 'compound':
+            e3 = np.eye(3)
+            return (np.array([-self.support(-e3[i]) for i in range(3)]),
+                    np.array([self.support(e3[i]) for i in range(3)]))
         if self._shape == 'box':
             c = o + R[:, 2] * (s[2] / 2.0)
             e = np.abs(R) @ (np.array(s) / 2.0)
@@ -292,6 +379,57 @@ class SimObject:
             pts = self._centers @ R.T + o
             return pts.min(axis=0) - s[0], pts.max(axis=0) + s[0]
         return c - e, c + e
+
+    def part_aabbs(self) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """Return base-frame (lo, hi) bounds of every compound part ([aabb()] for other shapes)."""
+        if self._shape != 'compound':
+            return [self.aabb()]
+        out = []
+        for kind, T, prm, _c in self._parts:
+            Tb = self._T @ T
+            R, c = Tb[:3, :3], Tb[:3, 3]
+            if kind == 'ellipsoid':
+                e = np.sqrt((R * R) @ (np.array(prm) ** 2))
+            elif kind == 'box':
+                e = np.abs(R) @ (np.array(prm) / 2.0)
+            elif kind == 'cylinder':
+                r, h = prm
+                c = c + R[:, 2] * (h / 2.0)
+                az = np.abs(R[:, 2])
+                e = h / 2.0 * az + r * np.sqrt(np.maximum(0.0, 1.0 - az * az))
+            else:
+                e = prm[1] * np.abs(R[:, 0]) + prm[0]
+            out.append((c - e, c + e))
+        return out
+
+    def footprint_polygons(self) -> List[np.ndarray]:
+        """
+        Return base-XY footprints (4 x 2 corners each) of the object's parts.
+
+        'compound': one yawed rectangle per part (its horizontal extent in the
+        part frame), so overlap tests do not count the empty inside of a
+        curved object; other shapes: one rectangle of the local bounds. Meant
+        for objects standing upright on the table.
+        """
+        if self._shape != 'compound':
+            lo, hi = self.local_aabb()
+            loc = [np.array([[lo[0], lo[1], 0.0], [hi[0], lo[1], 0.0], [hi[0], hi[1], 0.0],
+                             [lo[0], hi[1], 0.0]])]
+        else:
+            loc = []
+            for kind, T, prm, _c in self._parts:
+                if kind == 'ellipsoid':
+                    hx, hy = prm[0], prm[1]
+                elif kind == 'box':
+                    hx, hy = prm[0] / 2.0, prm[1] / 2.0
+                elif kind == 'cylinder':
+                    hx = hy = prm[0]
+                else:
+                    hx, hy = prm[1] + prm[0], prm[0]
+                q = np.array([[-hx, -hy, 0.0], [hx, -hy, 0.0], [hx, hy, 0.0], [-hx, hy, 0.0]])
+                loc.append(q @ T[:3, :3].T + T[:3, 3])
+        R, o = self._T[:3, :3], self._T[:3, 3]
+        return [(q @ R.T + o)[:, :2] for q in loc]
 
     def bounding_sphere(self) -> Tuple[np.ndarray, float]:
         """Return a conservative (center (3,), radius) in the base frame (m)."""
@@ -336,6 +474,23 @@ class SimObject:
         self._T[1, 3] += vals[1] - c[1]
         self.rest_on(vals[3])
 
+    def section_extent(self, axis_xy: Sequence[float], z_lo: float, z_hi: float
+                       ) -> Optional[Tuple[float, float]]:
+        """
+        Return (lo, hi) along a horizontal base axis of the material between base z_lo and z_hi.
+
+        Uses the surface samples (~2.5 mm), so it is the cross-section extent
+        of that height band; None when the object has no material there.
+        """
+        a = np.array([float(axis_xy[0]), float(axis_xy[1]), 0.0])
+        a /= max(float(np.linalg.norm(a)), 1e-12)
+        pts = self.surface_points()
+        sel = (pts[:, 2] >= float(z_lo)) & (pts[:, 2] <= float(z_hi))
+        if not np.any(sel):
+            return None
+        v = pts[sel] @ a
+        return float(v.min()), float(v.max())
+
     def local_surface_points(self) -> np.ndarray:
         """Return surface samples in the object frame (N x 3, spacing ~2.5 mm)."""
         if self._local_samples is None:
@@ -350,26 +505,26 @@ class SimObject:
     def _make_samples(self) -> np.ndarray:
         s = self._size
         sp = SAMPLE_SPACING
+        if self._shape == 'compound':
+            out = []
+            for kind, T, prm, _c in self._parts:
+                if kind == 'ellipsoid':
+                    loc = _ellipsoid_surface(np.array(prm), sp)
+                elif kind == 'box':
+                    loc = _box_surface(np.array(prm) / 2.0, sp)
+                elif kind == 'cylinder':
+                    loc = _cylinder_surface(prm[0], prm[1], sp)
+                else:
+                    loc = _capsule_surface(prm[0], prm[1], sp)
+                out.append(loc @ T[:3, :3].T + T[:3, 3])
+            return np.vstack(out)
         if self._shape == 'box':
             return _box_surface(np.array(s) / 2.0, sp) + np.array([0.0, 0.0, s[2] / 2.0])
         if self._shape in ('sphere', 'ellipsoid'):
             radii = np.array([s[0]] * 3) if self._shape == 'sphere' else np.array(s)
-            n = int(min(20000, max(400, 4.0 * math.pi * float(np.max(radii)) ** 2 / sp ** 2 * 2)))
-            return fibonacci_sphere(n) * radii + np.array([0.0, 0.0, radii[2]])
+            return _ellipsoid_surface(radii, sp) + np.array([0.0, 0.0, radii[2]])
         if self._shape == 'cylinder':
-            r, h = s
-            na = max(48, int(math.ceil(2 * math.pi * r / sp)))
-            nz = max(2, int(math.ceil(h / sp)) + 1)
-            a = np.linspace(0.0, 2 * math.pi, na, endpoint=False)
-            zz = np.linspace(0.0, h, nz)
-            A, Z = np.meshgrid(a, zz)
-            side = np.column_stack([r * np.cos(A).ravel(), r * np.sin(A).ravel(), Z.ravel()])
-            g = np.arange(-r, r + 1e-9, sp)
-            X, Y = np.meshgrid(g, g)
-            keep = X ** 2 + Y ** 2 <= r * r
-            disk = np.column_stack([X[keep], Y[keep]])
-            caps = [np.column_stack([disk, np.full(len(disk), zc)]) for zc in (0.0, h)]
-            return np.vstack([side] + caps)
+            return _cylinder_surface(s[0], s[1], sp)
         r = s[0]
         n = int(max(60, 4.0 * math.pi * r * r / sp ** 2 * 2))
         unit = fibonacci_sphere(n) * r
@@ -383,10 +538,72 @@ class SimObject:
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-friendly summary (pose as x, y, bottom z, yaw)."""
         c = self.center_xy()
-        return {'name': self.name, 'label': self.label, 'shape': self._shape,
-                'center_xy': [round(float(c[0]), 4), round(float(c[1]), 4)],
-                'bottom_z': round(self.bottom_z(), 4), 'top_z': round(self.top_z(), 4),
-                'yaw': round(self.yaw(), 4)}
+        d = {'name': self.name, 'label': self.label, 'shape': self._shape,
+             'center_xy': [round(float(c[0]), 4), round(float(c[1]), 4)],
+             'bottom_z': round(self.bottom_z(), 4), 'top_z': round(self.top_z(), 4),
+             'yaw': round(self.yaw(), 4)}
+        if self.mass is not None:
+            d['mass'] = self.mass
+        if self.material is not None:
+            d['material'] = self.material
+        return d
+
+
+def _normalize_part(p: Any, what: str) -> Dict[str, Any]:
+    """Return a validated compound part dict (shape, size, pos, yaw, color_bgr)."""
+    if not isinstance(p, dict):
+        raise ValueError('%s: expected a dict, got %r' % (what, p))
+    kind = p.get('shape')
+    if kind not in COMPOUND_PARTS:
+        raise ValueError('%s: unknown shape %r (expected one of %s)'
+                         % (what, kind, sorted(COMPOUND_PARTS)))
+    size = list(p.get('size', ()))
+    if len(size) != COMPOUND_PARTS[kind]:
+        raise ValueError('%s: %s needs %d size values, got %r'
+                         % (what, kind, COMPOUND_PARTS[kind], size))
+    pos = _finite_array(p.get('pos', (0.0, 0.0, 0.0)), (3,), what + ' pos')
+    yaw = float(p.get('yaw', 0.0) or 0.0)
+    if not math.isfinite(yaw):
+        raise ValueError('%s: yaw must be finite' % what)
+    color = p.get('color_bgr')
+    return {'shape': kind, 'size': tuple(_positive(v, what + ' size', 1.0) for v in size),
+            'pos': tuple(float(v) for v in pos), 'yaw': yaw,
+            'color_bgr': None if color is None else _check_color(color, what)}
+
+
+def _ellipsoid_surface(radii: np.ndarray, spacing: float) -> np.ndarray:
+    """Return samples on a centered ellipsoid."""
+    n = int(min(20000, max(400, 4.0 * math.pi * float(np.max(radii)) ** 2 / spacing ** 2 * 2)))
+    return fibonacci_sphere(n) * radii
+
+
+def _cylinder_surface(r: float, h: float, spacing: float) -> np.ndarray:
+    """Return samples on a vertical cylinder (axis z from 0 to h) with caps."""
+    na = max(48, int(math.ceil(2 * math.pi * r / spacing)))
+    nz = max(2, int(math.ceil(h / spacing)) + 1)
+    a = np.linspace(0.0, 2 * math.pi, na, endpoint=False)
+    zz = np.linspace(0.0, h, nz)
+    A, Z = np.meshgrid(a, zz)
+    side = np.column_stack([r * np.cos(A).ravel(), r * np.sin(A).ravel(), Z.ravel()])
+    g = np.arange(-r, r + 1e-9, spacing)
+    X, Y = np.meshgrid(g, g)
+    keep = X ** 2 + Y ** 2 <= r * r
+    disk = np.column_stack([X[keep], Y[keep]])
+    caps = [np.column_stack([disk, np.full(len(disk), zc)]) for zc in (0.0, h)]
+    return np.vstack([side] + caps)
+
+
+def _capsule_surface(r: float, half_length: float, spacing: float) -> np.ndarray:
+    """Return samples on a centered capsule along x (radius r, segment +-half_length)."""
+    n = int(max(200, 4.0 * math.pi * r * r / spacing ** 2 * 2))
+    caps = fibonacci_sphere(n) * r
+    caps[:, 0] += np.where(caps[:, 0] >= 0.0, half_length, -half_length)
+    na = max(24, int(math.ceil(2 * math.pi * r / spacing)))
+    nx = max(2, int(math.ceil(2 * half_length / spacing)) + 1)
+    a = np.linspace(0.0, 2 * math.pi, na, endpoint=False)
+    X, A = np.meshgrid(np.linspace(-half_length, half_length, nx), a)
+    side = np.column_stack([X.ravel(), r * np.cos(A).ravel(), r * np.sin(A).ravel()])
+    return np.vstack([caps, side])
 
 
 def _box_surface(half: np.ndarray, spacing: float) -> np.ndarray:
@@ -489,6 +706,57 @@ def gripper_boxes(T_base_tcp: np.ndarray, width: float) -> List[Tuple[np.ndarray
     palm = make_T(np.eye(3), (0.0, 0.0, -(PALM_BOTTOM + PALM_SIZE[2] / 2.0)))
     out.append((T @ palm, np.array(PALM_SIZE) / 2.0, GRIPPER_COLOR_BGR))
     return out
+
+
+def pad_section(obj: SimObject, T_base_tcp: np.ndarray, z_lo: float = -GRASP_PAD_HALF,
+                z_hi: float = GRASP_PAD_HALF) -> Optional[Tuple[float, float]]:
+    """
+    Return (vmin, vmax) along tool y (relative to the TCP) of obj's material between the pads.
+
+    Material within the pad width along tool x and between z_lo and z_hi along
+    tool z (m, relative to the TCP, tool z points down: the default is the pad
+    band TCP +- GRASP_PAD_HALF); None when there is none.
+    """
+    T = np.asarray(T_base_tcp, dtype=float)
+    loc = (obj.surface_points() - T[:3, 3]) @ T[:3, :3]
+    sl = ((np.abs(loc[:, 0]) <= FINGER_SIZE[0] / 2.0)
+          & (loc[:, 2] >= z_lo) & (loc[:, 2] <= z_hi))
+    if not np.any(sl):
+        return None
+    return float(loc[sl, 1].min()), float(loc[sl, 1].max())
+
+
+_pad_section = pad_section
+
+
+def _dome_taper_deg(obj: SimObject, T: np.ndarray, step: float = 0.0025,
+                    rise: float = 0.01) -> Optional[float]:
+    """
+    Return the inward taper (deg) above the widest pad-band section when that is the lower edge.
+
+    None when the widest section is higher up (equator or neck inside the
+    band: no slip); 90 when nothing is above it within rise (a thin rim).
+    """
+    loc = (obj.surface_points() - T[:3, 3]) @ T[:3, :3]
+    loc = loc[np.abs(loc[:, 0]) <= FINGER_SIZE[0] / 2.0]
+    up = -loc[:, 2]
+    n = int(round(2.0 * GRASP_PAD_HALF / step)) + 1
+    zs = -GRASP_PAD_HALF + step * np.arange(n)
+    widths = np.full(n, np.nan)
+    for i, z in enumerate(zs):
+        sel = np.abs(up - z) <= step / 2.0 + 1e-9
+        if np.any(sel):
+            widths[i] = float(np.ptp(loc[sel, 1]))
+    if not np.any(np.isfinite(widths)):
+        return None
+    k = int(np.nanargmax(widths))
+    lowest = int(np.flatnonzero(np.isfinite(widths))[0])
+    if k > lowest + 1:
+        return None
+    j = k + int(round(rise / step))
+    if j >= n or not np.isfinite(widths[j]):
+        return 90.0
+    return math.degrees(math.atan2(max(0.0, widths[k] - widths[j]) / 2.0, rise))
 
 
 class SimWorld:
@@ -611,9 +879,16 @@ class SimWorld:
         no object with material in the column swept by either finger (inner
         faces at +-open_width / 2 along tool y, FINGER_SIZE, from the
         fingertips upwards) or under the palm, and a target extent along tool
-        y between fingertips and finger tops < open_width.
+        y between fingertips and finger tops < open_width. For a 'compound'
+        target the extent along tool y is its cross-section in the pad band
+        (TCP z +- GRASP_PAD_HALF, within the pad width along tool x), and the
+        tool y centering uses that section instead of the footprint, so a pear
+        can be held at its neck but not across its bulb; a grip whose widest
+        section is the lower pad edge under a steep dome (GRASP_SLIP_TAPER_DEG)
+        fails with 'slip_dome'.
         info: ok, reason ('' | 'no_object' | 'collision_finger' |
-        'collision_palm' | 'no_material_between_fingers' | 'too_wide'),
+        'collision_palm' | 'no_material_between_fingers' | 'too_wide' |
+        'slip_dome'),
         object, du / dv (m, footprint center minus TCP along tool x / y),
         width (held width, m) and offset_v (m) on success.
         """
@@ -627,10 +902,17 @@ class SimWorld:
             if obj is self.held or not obj.bottom_z() < p[2] < obj.top_z():
                 continue
             ulo, uhi = obj.extent_along(R[:, 0])
-            vlo, vhi = obj.extent_along(R[:, 1])
             du = (ulo + uhi) / 2.0 - float(p @ R[:, 0])
-            dv = (vlo + vhi) / 2.0 - float(p @ R[:, 1])
-            tol_y = self.grasp_tol_y_frac * (vhi - vlo) / 2.0
+            if obj.shape == 'compound':
+                sec = _pad_section(obj, T)
+                if sec is None:
+                    continue
+                dv = (sec[0] + sec[1]) / 2.0
+                tol_y = self.grasp_tol_y_frac * (sec[1] - sec[0]) / 2.0
+            else:
+                vlo, vhi = obj.extent_along(R[:, 1])
+                dv = (vlo + vhi) / 2.0 - float(p @ R[:, 1])
+                tol_y = self.grasp_tol_y_frac * (vhi - vlo) / 2.0
             if abs(du) <= self.grasp_tol_x and abs(dv) <= tol_y:
                 cands.append((math.hypot(du, dv), obj, du, dv))
         if not cands:
@@ -646,18 +928,30 @@ class SimWorld:
             if hit:
                 info.update(reason='collision_%s' % hit, collided=obj.name)
                 return False, info
-        loc = (target.surface_points() - p) @ R
-        above = -loc[:, 2]
-        sl = ((np.abs(loc[:, 0]) <= FINGER_SIZE[0] / 2.0) & (above >= 0.0)
-              & (above <= FINGER_SIZE[2]))
-        if not np.any(sl):
-            info.update(reason='no_material_between_fingers')
-            return False, info
-        vmin, vmax = float(loc[sl, 1].min()), float(loc[sl, 1].max())
+        if target.shape == 'compound':
+            sec = _pad_section(target, T)
+            if sec is None:
+                info.update(reason='no_material_between_fingers')
+                return False, info
+            vmin, vmax = sec
+        else:
+            loc = (target.surface_points() - p) @ R
+            above = -loc[:, 2]
+            sl = ((np.abs(loc[:, 0]) <= FINGER_SIZE[0] / 2.0) & (above >= 0.0)
+                  & (above <= FINGER_SIZE[2]))
+            if not np.any(sl):
+                info.update(reason='no_material_between_fingers')
+                return False, info
+            vmin, vmax = float(loc[sl, 1].min()), float(loc[sl, 1].max())
         extent = vmax - vmin
         if extent >= ow:
             info.update(reason='too_wide', extent=round(extent, 4))
             return False, info
+        if target.shape == 'compound':
+            taper = _dome_taper_deg(target, T)
+            if taper is not None and taper > GRASP_SLIP_TAPER_DEG:
+                info.update(reason='slip_dome', taper_deg=round(taper, 1))
+                return False, info
         info.update(ok=True, width=max(extent, cw), offset_v=(vmin + vmax) / 2.0)
         return True, info
 

@@ -29,6 +29,8 @@ LOG = logging.getLogger('cube_task.robot.safety')
 _PATH_STEP_M = 0.02        # spacing of path samples for linear moves
 _PATH_MAX_SAMPLES = 40
 _JOINT_PATH_SAMPLES = 10   # samples along a joint-space (P2P / move_joints) path
+#: default of robot.workspace.max_tilt_free_deg (deg).
+DEFAULT_MAX_TILT_FREE_DEG = 40.0
 
 
 def _need(cfg, key: str):
@@ -69,7 +71,10 @@ class SafetyGuard:
     Keys (all required, no defaults): x, y, z ([min, max] m, base frame),
     r_min / r_max (m, horizontal distance of the TCP from the base z axis),
     min_table_clearance (m, TCP z above the table z), max_tilt_from_down_deg
-    (deg, angle between the tool z axis and base -Z).
+    (deg, angle between the tool z axis and base -Z). Optional:
+    max_tilt_free_deg (default 40, never below max_tilt_from_down_deg), the
+    largest per-call tilt limit (``max_tilt_deg``) a caller may ask for; used for
+    free-space poses (pre-grasp, lift, transit, pre-place, retreat) only.
     """
 
     def __init__(self, cfg):
@@ -85,15 +90,42 @@ class SafetyGuard:
         if not 0.0 <= tilt <= 180.0:
             raise ValueError('config robot.workspace.max_tilt_from_down_deg must be in [0, 180]')
         self.max_tilt = math.radians(tilt)
+        free = cfg.get('robot.workspace.max_tilt_free_deg', DEFAULT_MAX_TILT_FREE_DEG)
+        try:
+            free = float(DEFAULT_MAX_TILT_FREE_DEG if free is None else free)
+        except (TypeError, ValueError):
+            raise ValueError('config robot.workspace.max_tilt_free_deg must be a number')
+        if not (math.isfinite(free) and 0.0 <= free <= 180.0):
+            raise ValueError('config robot.workspace.max_tilt_free_deg must be in [0, 180]')
+        self.max_tilt_free = max(self.max_tilt, math.radians(free))
+
+    def tilt_limit(self, max_tilt_deg: Optional[float] = None) -> float:
+        """
+        Return the tilt limit (rad) of one call.
+
+        None: max_tilt_from_down_deg; else max_tilt_deg (deg) capped at
+        max_tilt_free_deg (a NaN or negative request gives 0).
+        """
+        if max_tilt_deg is None:
+            return self.max_tilt
+        try:
+            req = math.radians(float(max_tilt_deg))
+        except (TypeError, ValueError):
+            return 0.0
+        if not req >= 0.0:
+            return 0.0
+        return min(req, self.max_tilt_free)
 
     def check_tcp(self, T_base_tcp: np.ndarray, table_z: Optional[float] = None,
-                  check_tilt: bool = True) -> Tuple[bool, str]:
+                  check_tilt: bool = True,
+                  max_tilt_deg: Optional[float] = None) -> Tuple[bool, str]:
         """
         Check a TCP target. Returns (ok, reason); reason is '' when ok.
 
         table_z: table height (m, base z) under the target, or None to skip
         the clearance test. check_tilt=False skips the tool-down test (used
-        for joint-space targets such as a folded home pose).
+        for joint-space targets such as a folded home pose). max_tilt_deg:
+        tilt limit of this call (see tilt_limit); None = max_tilt_from_down_deg.
         """
         try:
             T = np.asarray(T_base_tcp, dtype=float)
@@ -121,9 +153,10 @@ class SafetyGuard:
                                % (z, tz, self.min_table_clearance))
         if check_tilt:
             tilt = self.tilt_from_down(T)
-            if tilt > self.max_tilt + 1e-9:
+            limit = self.tilt_limit(max_tilt_deg)
+            if tilt > limit + 1e-9:
                 return False, ('tool tilt %.1f deg from straight down exceeds %.1f deg'
-                               % (math.degrees(tilt), math.degrees(self.max_tilt)))
+                               % (math.degrees(tilt), math.degrees(limit)))
         return True, ''
 
     @staticmethod
@@ -208,6 +241,11 @@ class SafeArm(ArmInterface):
     @property
     def kin(self) -> Optional[PiperKinematics]:
         return self._kin
+
+    @property
+    def max_tilt_free_deg(self) -> float:
+        """Largest per-call tilt limit (deg) move_tcp / check_reachable accept."""
+        return math.degrees(self._guard.max_tilt_free)
 
     @property
     def table_z(self) -> Optional[float]:
@@ -340,14 +378,17 @@ class SafeArm(ArmInterface):
         return self._kin.ik(T_tcp @ self._T_tf, q_seed=seed)
 
     def check_reachable(self, T_base_tcp: np.ndarray,
-                        q_seed: Optional[Sequence[float]] = None) -> Tuple[bool, str]:
+                        q_seed: Optional[Sequence[float]] = None,
+                        max_tilt_deg: Optional[float] = None) -> Tuple[bool, str]:
         """
         Workspace + IK check of a TCP target without moving. Returns (ok, reason).
 
         q_seed: joint angles (rad) to start IK from; None uses the current
-        joints when available.
+        joints when available. max_tilt_deg: tilt limit of this check
+        (SafetyGuard.tilt_limit).
         """
-        ok, reason = self._guard.check_tcp(T_base_tcp, self._table_z)
+        ok, reason = self._guard.check_tcp(T_base_tcp, self._table_z,
+                                           max_tilt_deg=max_tilt_deg)
         if not ok:
             return False, reason
         if self._kin is None:
@@ -362,14 +403,16 @@ class SafeArm(ArmInterface):
 
     def find_reachable_tilt(self, T_base_tcp: np.ndarray,
                             q_seed: Optional[Sequence[float]] = None,
-                            step_deg: float = 5.0) -> Tuple[Optional[np.ndarray], float, str]:
+                            step_deg: float = 5.0, max_tilt_deg: Optional[float] = None
+                            ) -> Tuple[Optional[np.ndarray], float, str]:
         """
         Lean a TCP target outward (kinematics.tilt_outward) until it is reachable.
 
         Tries 0, step_deg, 2 * step_deg, ... up to the guard's
-        max_tilt_from_down_deg. Returns (T_base_tcp to use or None, tilt rad,
-        reason of the last rejection). Planners use this for pre-grasp and
-        transit poses, which joint5's limit makes unreachable when vertical.
+        max_tilt_from_down_deg (or max_tilt_deg, capped at max_tilt_free_deg).
+        Returns (T_base_tcp to use or None, tilt rad, reason of the last
+        rejection). Planners use this for pre-grasp and transit poses, which
+        joint5's limit makes unreachable when vertical.
         """
         step = math.radians(step_deg)
         if not (math.isfinite(step) and step > 0):
@@ -377,10 +420,11 @@ class SafeArm(ArmInterface):
         T0 = np.asarray(T_base_tcp, dtype=float)
         reason = ''
         k = 0
-        while k * step <= self._guard.max_tilt + 1e-9:
+        limit = self._guard.tilt_limit(max_tilt_deg)
+        while k * step <= limit + 1e-9:
             tilt = k * step
             Tc = tilt_outward(T0, tilt) if k > 0 else T0
-            ok, reason = self.check_reachable(Tc, q_seed=q_seed)
+            ok, reason = self.check_reachable(Tc, q_seed=q_seed, max_tilt_deg=max_tilt_deg)
             if ok:
                 return Tc, tilt, ''
             k += 1
@@ -406,7 +450,8 @@ class SafeArm(ArmInterface):
         return True, ''
 
     def _check_linear_path(self, T_from: np.ndarray, T_to: np.ndarray,
-                           q_from: Optional[np.ndarray]) -> Tuple[bool, str]:
+                           q_from: Optional[np.ndarray],
+                           max_tilt_deg: Optional[float] = None) -> Tuple[bool, str]:
         dist = float(np.linalg.norm(T_to[:3, 3] - T_from[:3, 3]))
         ang = float(np.linalg.norm(rot_log(T_from[:3, :3].T @ T_to[:3, :3])))
         n = int(min(_PATH_MAX_SAMPLES, max(2, math.ceil(max(dist, 0.1 * ang) / _PATH_STEP_M))))
@@ -414,7 +459,7 @@ class SafeArm(ArmInterface):
         for k in range(1, n):
             s = k / float(n)
             Ts = interpolate_pose(T_from, T_to, s)
-            ok, reason = self._guard.check_tcp(Ts, self._table_z)
+            ok, reason = self._guard.check_tcp(Ts, self._table_z, max_tilt_deg=max_tilt_deg)
             if not ok:
                 return False, 'linear path at %.0f%%: %s' % (100 * s, reason)
             if self._kin is not None:
@@ -427,12 +472,20 @@ class SafeArm(ArmInterface):
 
     # --------------------------------------------------------------- motion
     def move_tcp(self, T_base_tcp: np.ndarray, linear: bool = False,
-                 timeout: Optional[float] = None) -> MotionResult:
-        """Check, then forward a TCP move (see the class docstring for the checks)."""
+                 timeout: Optional[float] = None,
+                 max_tilt_deg: Optional[float] = None) -> MotionResult:
+        """
+        Check, then forward a TCP move (see the class docstring for the checks).
+
+        max_tilt_deg: tilt limit of the target (SafetyGuard.tilt_limit; None =
+        max_tilt_from_down_deg). Samples of a linear path may lean as far as the
+        start pose does (at most max_tilt_free_deg), so a move from a leaned
+        free-space pose down to a grasp pose is accepted.
+        """
         gate = self._gate()
         if gate is not None:
             return gate
-        ok, reason = self._guard.check_tcp(T_base_tcp, self._table_z)
+        ok, reason = self._guard.check_tcp(T_base_tcp, self._table_z, max_tilt_deg=max_tilt_deg)
         if not ok:
             return _rejected(reason)
         T = np.asarray(T_base_tcp, dtype=float)
@@ -450,7 +503,11 @@ class SafeArm(ArmInterface):
             T_now = self._current_tcp(q_now)
             if T_now is None:
                 return _rejected('current TCP pose unknown, cannot check the linear path')
-            ok, reason = self._check_linear_path(T_now, T, q_now)
+            limit = self._guard.tilt_limit(max_tilt_deg)
+            start = min(self._guard.tilt_from_down(T_now) + math.radians(0.5),
+                        self._guard.max_tilt_free)
+            path_deg = math.degrees(max(limit, start))
+            ok, reason = self._check_linear_path(T_now, T, q_now, path_deg)
         elif self._kin is not None:
             ok, reason = self._check_joint_path(q_now, q_goal)
         if not ok:

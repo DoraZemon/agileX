@@ -7,8 +7,9 @@
 #        bash scripts/mujoco_run.sh sim_bench --backend mujoco --tasks L1 --seeds 0-9 --jobs 6
 #
 # Uses the MuJoCo venv (MUJOCO_PYTHON, default ~/.venvs/piper-mujoco/bin/python;
-# MuJoCo is not installed for the system python3), renders offscreen on the GPU
-# (MUJOCO_GL=egl unless already set), drops the ROS PYTHONPATH so the venv's
+# MuJoCo is not installed for the system python3), uses GLFW with --viewer on a
+# desktop and EGL for headless rendering (respects an explicit MUJOCO_GL),
+# drops the ROS PYTHONPATH so the venv's
 # packages are used, and runs "python -m cube_task <tool> ..." from the package
 # root (this source tree).
 set -euo pipefail
@@ -25,5 +26,17 @@ if [ ! -x "$PY" ]; then
     exit 2
 fi
 cd "$ROOT"
-export MUJOCO_GL="${MUJOCO_GL:-egl}"
+if [ -z "${MUJOCO_GL:-}" ]; then
+    MUJOCO_GL=egl
+    if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        for arg in "$@"; do
+            if [ "$arg" = "--viewer" ]; then
+                # Use the viewer's backend for the RGB-D/video renderers too.
+                MUJOCO_GL=glfw
+                break
+            fi
+        done
+    fi
+fi
+export MUJOCO_GL
 exec env -u PYTHONPATH "$PY" -m cube_task "$@"

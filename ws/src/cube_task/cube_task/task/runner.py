@@ -6,7 +6,9 @@ instructions parsed -> refuse when the gripper holds an object -> straight up
 when the TCP starts below the transit height -> observe pose + open gripper ->
 eye_in_hand real runs: pick area visible from the observe pose -> operator start
 (Enter typed before the prompt does not count) -> timed loop of observe / select
-/ plan / pick-place -> observe pose at the end. A fault stops the run at once with
+/ plan / pick-place. Fixed cameras capture in place after a successful retreat;
+wrist cameras return to the observe pose. Returning there at the end is optional.
+A fault stops the run at once with
 no further motion; the runner never restarts or resumes by itself (one
 referee-approved restart per round is a human decision). Camera or perception
 failures are retried until the deadline and do not count as 'nothing to pick'.
@@ -23,9 +25,9 @@ import numpy as np
 from ..core.transforms import pose6_to_T
 from ..core.types import Detection, PerceptionResult, PickResult, TaskReport
 from ..core.zones import parse_zones
-from ..perception.grasp import (expected_table_z, GraspPlanner, PlacePlanner, detection_table_z,
-                                held_offset_of, max_gripper_width, table_floor_z, table_z_warning,
-                                transit_height)
+from ..perception.grasp import (expected_table_z, GraspPlanner, LONG_ZONE_RATIO, PlacePlanner,
+                                detection_table_z, held_offset_of, max_gripper_width,
+                                table_floor_z, table_z_warning, transit_height)
 from .instruction import COUNT_ALL, parse_instruction
 from .operator import Operator
 from .selection import is_blacklisted, select_target
@@ -51,6 +53,15 @@ PROBE_CLOSE = 0.008
 PROBE_TOL = 0.003
 #: eye_in_hand real runs: fresh frames tried for the pick-area check at the observe pose.
 VIEW_CHECK_TRIES = 2
+#: default grasp.min_approach_clearance (m): lowest pre-grasp TCP height above the object
+#: top, and of the retreat above the released object, when higher poses are out of reach.
+MIN_APPROACH_CLEARANCE = 0.02
+#: default grasp.transit_object_clearance (m): the held object's bottom stays this far
+#: above every other object near the straight line from the pick to the release.
+TRANSIT_OBJECT_CLEARANCE = 0.03
+#: an object counts as near that line within its and the held object's half footprints
+#: plus this (m).
+LINE_MARGIN = 0.03
 
 
 class _NullLogger:
@@ -80,6 +91,54 @@ def _footprint(det: Detection) -> Optional[float]:
     """Largest horizontal extent of a detection (m), None when unknown."""
     vals = [float(v) for v in (det.length, det.width) if v is not None and math.isfinite(float(v))]
     return max(vals) if vals and max(vals) > 0.0 else None
+
+
+def held_shape(det: Detection, gp) -> Optional[Dict[str, Any]]:
+    """
+    Return the held object's shape for PlacePlanner.plan(held=...), None if unknown.
+
+    The long axis is perpendicular to the closing axis for 'elongated' grasps
+    (GraspPlanner kind, det.extra['grasp']); grip_z = grasp TCP above the bottom.
+    """
+    vals = [float(v) for v in (det.length, det.width) if v is not None and math.isfinite(
+        float(v))]
+    if len(vals) < 2 or min(vals) <= 0.0:
+        return None
+    tz = detection_table_z(det)
+    kind = (det.extra.get('grasp') or {}).get('kind', '') if det.extra else ''
+    return {'length': max(vals), 'width': min(vals), 'elongated': kind == 'elongated',
+            'grip_width': float(gp.expected_width),
+            'grip_z': 0.0 if tz is None else max(0.0, float(gp.T_grasp[2, 3]) - tz)}
+
+
+def _seg_point_dist(p, a, b) -> float:
+    a, b, p = (np.asarray(v, dtype=float)[:2] for v in (a, b, p))
+    d = b - a
+    L2 = float(d @ d)
+    t = 0.0 if L2 < 1e-18 else min(1.0, max(0.0, float((p - a) @ d) / L2))
+    return float(np.linalg.norm(p - (a + t * d)))
+
+
+def line_obstacle_top(det: Detection, others: Sequence[Detection], xy_to: Sequence[float],
+                      margin: float = LINE_MARGIN) -> Optional[float]:
+    """
+    Return the highest top z (m) of the other objects near the pick -> release line.
+
+    Near: center within margin + both half footprints of the straight base-XY
+    segment from det to xy_to. None when no other object is near it.
+    """
+    if not _has_xy(det):
+        return None
+    a = _xy(det)
+    half = (_footprint(det) or 0.0) / 2.0
+    best = None
+    for o in others:
+        if o is det or not _has_xy(o) or o.top_z is None or not math.isfinite(float(o.top_z)):
+            continue
+        r = half + (_footprint(o) or 0.0) / 2.0 + margin
+        if _seg_point_dist(_xy(o), a, xy_to) <= r:
+            best = float(o.top_z) if best is None else max(best, float(o.top_z))
+    return best
 
 
 def pick_summary(r: PickResult) -> Dict[str, Any]:
@@ -137,7 +196,8 @@ class TaskRunner:
         self.max_empty = int(cfg.get(r + 'max_empty_observations', 4))
         self.min_time = float(cfg.get(r + 'min_time_for_pick_s', 12.0))
         self.retry_s = float(cfg.get(r + 'observe_retry_s', 0.5))
-        self.return_home = bool(cfg.get(r + 'return_home_at_end', True))
+        self.return_home = bool(cfg.get(r + 'return_home_at_end', False))
+        self.return_to_observe = bool(cfg.get(r + 'return_to_observe_after_pick', False))
         self.match_dist = float(cfg.get('perception.tracking.match_dist_m', 0.03))
         self.n_avg = int(cfg.get('camera.frames_to_average', 3))
         self.settle_s = float(cfg.get('camera.settle_s', 0.4))
@@ -156,17 +216,25 @@ class TaskRunner:
         self.planner = GraspPlanner(cfg, self.task)
         self.placer = PlacePlanner(cfg)
         self.max_width = max_gripper_width(cfg)
-        self.skill = PickPlaceSkill(cfg, arm, clock, self.logger)
+        self.skill = PickPlaceSkill(cfg, arm, clock, self.logger, task=self.task)
+        from .reach import free_tilt_limit
+        self.free_tilt = free_tilt_limit(arm, cfg)
+        g = 'grasp.'
+        self.min_approach = float(cfg.get(g + 'min_approach_clearance', MIN_APPROACH_CLEARANCE))
+        self.transit_clear = float(cfg.get(g + 'transit_object_clearance',
+                                           TRANSIT_OBJECT_CLEARANCE))
         self.expected_table_z = expected_table_z(cfg)
         self._tracks: List[Dict[str, Any]] = []
         self._label_failures: Dict[str, int] = {}
-        #: zone name -> (x, y, footprint, height) of the objects released into it
-        self._placed: Dict[str, List[Tuple[float, float, float, float]]] = {}
+        #: zone name -> (x, y, footprint, height, length, width, long-axis angle or None) of
+        #: the objects released into it
+        self._placed: Dict[str, List[Tuple[Any, ...]]] = {}
         self._specs: Optional[List[Tuple[str, Any]]] = None
         self._fail_streak = 0
         self._last_obs_failure = ''
         self._table_warned = False
         self._at_observe = False
+        self._capture_in_place = False
         self._t_arrived: Optional[float] = None
         self._last_stamp: Optional[float] = None
         self._obs = 0
@@ -470,6 +538,7 @@ class TaskRunner:
 
     def _go_observe(self) -> Tuple[bool, str]:
         """Move to the observe pose (taught joints, else observe_tcp); (ok, error)."""
+        self._capture_in_place = False
         qj = self.cfg.get('robot.poses.observe_joints', None)
         if qj is not None:
             m = self.arm.move_joints([float(v) for v in qj])
@@ -493,13 +562,13 @@ class TaskRunner:
     # ------------------------------------------------------------ observation
     def _observe(self) -> Tuple[str, Optional[PerceptionResult], Any]:
         """
-        Park / observe, capture and run perception.
+        Capture at the observe pose or after a successful fixed-camera retreat.
 
         Returns (status, result, frame) with status 'ok', 'failed' (no usable
         frame, no flange pose, perception error or a first failed observe move;
         the reason is in _last_obs_failure), 'fault' or 'aborted'.
         """
-        if not self._at_observe:
+        if not self._at_observe and not self._capture_in_place:
             ok, err = self._go_observe()
             if not ok:
                 if err == 'aborted' or self._aborted():
@@ -561,7 +630,16 @@ class TaskRunner:
         self._fail_streak += 1
         self._last_obs_failure = reason
         self._event('observation', ok=False, reason=reason, failures=self._fail_streak, **fields)
+        self._retry_from_observe(reason)
         return 'failed', None, None
+
+    def _retry_from_observe(self, reason: str) -> bool:
+        """Retry an unusable in-place view once from the taught observe pose."""
+        if not self._capture_in_place:
+            return False
+        self._capture_in_place = False
+        self._event('decision', action='observe_fallback', reason=reason)
+        return True
 
     def _pause_after_failure(self) -> None:
         """Wait before the next try after a failed observation (longer after many)."""
@@ -714,6 +792,7 @@ class TaskRunner:
             track['xy'] = _xy(det)
             return None, None
         track['xy'] = _xy(det)
+        self._neighbors = list(neighbors)
         gp = self.planner.plan(det)
         if not gp.feasible:
             if gp.reason.startswith(REMEASURE_REASONS):
@@ -725,7 +804,7 @@ class TaskRunner:
                     return None, None
             self._blacklist(track, 'grasp infeasible: %s' % gp.reason)
             return None, None
-        tops = [float(d.top_z) for d in neighbors if d.top_z is not None
+        tops = [float(d.top_z) for d in neighbors if d is not det and d.top_z is not None
                 and math.isfinite(float(d.top_z))]
         held = held_offset_of(gp)
         tz = transit_height(self.cfg, list(self.zones.values()), detection_table_z(det), held,
@@ -733,25 +812,41 @@ class TaskRunner:
         zone = self.zones.get(zone_name)
         footprint = _footprint(det)
         occupied = list(self._placed.get(zone_name, []))
+        shape = held_shape(det, gp)
+        pending = [(float(d.length), float(d.width)) for d in neighbors
+                   if d is not det and self.class_to_zone.get(d.label) == zone_name
+                   and d.length is not None and d.width is not None]
         pp = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
-                              center_first=self._center_first(zone_name))
+                              center_first=self._center_first(zone_name), held=shape,
+                              pending=pending)
+        place_info = dict(self.placer.last_info)
         if not pp.feasible:
             self._blacklist(track, 'place infeasible: %s' % pp.reason)
             return None, None
         from .reach import adjust_plan_poses
         # Checks every pose (SafeArm workspace + IK) and leans high poses outward
-        # when joint5 needs it; a pose that stays unreachable blacklists the object.
-        ok, why, tilts = adjust_plan_poses(self.arm, gp, pp)
+        # when joint5 needs it (free-space poses up to max_tilt_free_deg); free-space
+        # poses still out of reach are lowered to their floors; a pose that stays
+        # unreachable blacklists the object.
+        report: Dict[str, Any] = {}
+        ok, why, tilts = adjust_plan_poses(self.arm, gp, pp, self._floors(det, gp, pp, held),
+                                           self.free_tilt, report)
         if not ok and footprint is not None:
             # The spread release position may be out of reach: try the zone center.
-            pc = self.placer.plan(zone, held, tz, occupied=occupied)
+            pc = self.placer.plan(zone, held, tz, occupied=occupied, held=shape,
+                                  center_only=True)
             if pc.feasible:
-                ok, _why, tilts = adjust_plan_poses(self.arm, gp, pc)
+                ok, _why, tilts = adjust_plan_poses(self.arm, gp, pc,
+                                                    self._floors(det, gp, pc, held),
+                                                    self.free_tilt, report)
                 if ok:
                     pp = pc
+                    place_info = dict(self.placer.last_info)
         if not ok:
             self._blacklist(track, 'unreachable %s' % why)
             return None, None
+        if report.get('lowered'):
+            self._event('decision', action='lowered', label=det.label, lowered=report['lowered'])
         if any(v > 0 for v in tilts.values()):
             self._event('decision', action='tilt', label=det.label, tilt_deg=tilts)
         stop = self._stop_check()
@@ -764,20 +859,29 @@ class TaskRunner:
                     closing_angle=round(gp.closing_angle, 4),
                     grasp_xyz=[round(float(v), 4) for v in gp.T_grasp[:3, 3]],
                     release_xyz=[round(float(v), 4) for v in pp.T_release[:3, 3]],
-                    transit_z=round(tz, 4), remaining=round(self._remaining(), 2))
+                    transit_z=round(float(pp.T_pre[2, 3]), 4), place=place_info,
+                    grasp=det.extra.get('grasp', {}) if det.extra else {},
+                    remaining=round(self._remaining(), 2))
         res = self.skill.execute(gp, pp, dry_run=self.dry_run)
         self._at_observe = False
+        self._capture_in_place = False
         if res.detail.get('fault') or res.detail.get('holding'):
             # A held object that could not be put down is a fault as well.
             self.fault_detail = 'pick %s at stage %s: %s' % (res.label, res.stage, res.error)
             return ('aborted' if self._aborted() else 'fault'), res
         if res.ok:
+            if (self.mount == 'eye_to_hand' and not self.return_to_observe
+                    and not res.detail.get('retreat_failed')):
+                self._capture_in_place = True
+                self._t_arrived = self.clock.now()
             self._tracks.remove(track)
             x_rel, y_rel = (float(v) for v in pp.T_release[:2, 3])
             h = float(det.height) if det.height is not None and math.isfinite(
                 float(det.height)) else 0.0
+            axis = place_info.get('axis') if shape is not None else None
             self._placed.setdefault(zone_name, []).append(
-                (x_rel, y_rel, 0.0 if footprint is None else footprint, h))
+                (x_rel, y_rel, 0.0 if footprint is None else footprint, h,
+                 shape['length'] if shape else None, shape['width'] if shape else None, axis))
         elif self.dry_run and res.stage == 'dry_run_done':
             self._blacklist(track, 'dry_run_visited')
         else:
@@ -787,23 +891,90 @@ class TaskRunner:
                 self._blacklist(track, 'max_attempts (%s)' % res.error)
         return None, res
 
+    def _floors(self, det: Detection, gp, pp, held: float) -> Dict[str, float]:
+        """
+        Return the lowest z (m) adjust_plan_poses may lower each free-space pose to.
+
+        pre_grasp: object top + min_approach_clearance; lift / pre_place: the
+        held object's bottom transit_object_clearance above every other object
+        near the pick -> release line and every zone wall top; retreat: the
+        fingertips min_approach_clearance above the released object.
+        """
+        tz = detection_table_z(det) or 0.0
+        top = float(det.top_z) if det.top_z is not None else float(det.center_base[2])
+        line = line_obstacle_top(det, getattr(self, '_neighbors', ()), pp.T_release[:2, 3])
+        high = max([tz] + [float(z.center[2]) + max(0.0, float(z.wall_height))
+                           for z in self.zones.values()] + ([line] if line is not None else []))
+        clear = high + self.transit_clear + held
+        z_g, z_r = float(gp.T_grasp[2, 3]), float(pp.T_release[2, 3])
+        h = float(det.height) if det.height is not None else top - tz
+        return {'pre_grasp': top + self.min_approach,
+                'lift': max(z_g + self.min_approach, clear),
+                'pre_place': max(z_r, clear),
+                'retreat': max(z_r + self.min_approach, z_r - held + h + self.min_approach)}
+
     def _center_first(self, zone_name: str) -> bool:
         """Release the first object at the zone center unless several labels share the zone."""
         return sum(1 for z in self.class_to_zone.values() if z == zone_name) <= 1
 
+    def _long_in(self, det: Detection, zone_name: Optional[str]) -> bool:
+        """Return True when det is longer than LONG_ZONE_RATIO x the flat zone's smaller side."""
+        zone = self.zones.get(zone_name) if zone_name else None
+        fp = _footprint(det)
+        return (zone is not None and fp is not None and float(zone.wall_height) <= 0.0
+                and fp > LONG_ZONE_RATIO * min(float(zone.size[0]), float(zone.size[1])))
+
+    def _long_first(self, candidates: List[Detection]) -> List[Detection]:
+        """
+        Drop the other objects of flat zones that still wait for a long object.
+
+        A long object (cucumber on a 200 mm card) fits only along a zone diagonal
+        through the center, and its fingers then close along the other diagonal;
+        released first, it leaves the corners beside it for the rest. Zones that
+        already hold a long object, and long objects blacklisted at their
+        position, do not wait.
+        """
+        black = self._blacklisted_xy()
+        wait = set()
+        for d in candidates:
+            zn = self.class_to_zone.get(d.label)
+            if not self._long_in(d, zn) or is_blacklisted(d, black, self.match_dist):
+                continue
+            side = min(float(v) for v in self.zones[zn].size[:2])
+            if any(len(o) >= 5 and o[4] is not None and float(o[4]) > LONG_ZONE_RATIO * side
+                   for o in self._placed.get(zn, [])):
+                continue
+            wait.add(zn)
+        if not wait:
+            return candidates
+        return [d for d in candidates if self.class_to_zone.get(d.label) not in wait
+                or self._long_in(d, self.class_to_zone.get(d.label))]
+
     def _select(self, candidates: List[Detection], valid: List[Detection]
                 ) -> Optional[Detection]:
-        """Return select_target(...); labels at max_failures_per_label only when nothing else."""
+        """
+        Return select_target(...) over the first pool that gives a target.
+
+        Labels at max_failures_per_label only when nothing else; without a fixed
+        order (tasks.<T>.order / targets) long objects of flat zones first
+        (_long_first).
+        """
         capped = {lbl for lbl, n in self._label_failures.items() if n >= self.max_label_failures}
-        if capped:
-            rest = [d for d in candidates if d.label not in capped]
-            if rest:
-                t = select_target(rest, self.strategy, self.order, (0.0, 0.0),
-                                  self._blacklisted_xy(), self.match_dist, neighbors=valid)
-                if t is not None:
-                    return t
-        return select_target(candidates, self.strategy, self.order, (0.0, 0.0),
-                             self._blacklisted_xy(), self.match_dist, neighbors=valid)
+        rest = [d for d in candidates if d.label not in capped] if capped else candidates
+        pools = []
+        if not self.order and rest:
+            first = self._long_first(rest)
+            if 0 < len(first) < len(rest):
+                pools.append(first)
+        if rest and len(rest) < len(candidates):
+            pools.append(rest)
+        pools.append(candidates)
+        for pool in pools:
+            t = select_target(pool, self.strategy, self.order, (0.0, 0.0),
+                              self._blacklisted_xy(), self.match_dist, neighbors=valid)
+            if t is not None:
+                return t
+        return None
 
     # ------------------------------------------------------------- L1 / L2
     def _loop_sort(self, rep: TaskReport) -> None:
@@ -827,6 +998,8 @@ class TaskRunner:
             target = self._select(self._candidates(result), valid)
             self._save_image(frame, result, target)
             if target is None:
+                if self._retry_from_observe('no pickable target in the current view'):
+                    continue
                 empty += 1
                 self._event('decision', action='nothing_to_pick', empty=empty)
                 if empty >= self.max_empty:
@@ -947,6 +1120,8 @@ class TaskRunner:
             target = self.apply_selector(spec.selector, same)
             self._save_image(frame, result, target)
             if target is None:
+                if self._retry_from_observe('no matching object in the current view'):
+                    continue
                 empty += 1
                 if need is None and done > 0 and empty >= 2:
                     break                       # 'all': nothing left

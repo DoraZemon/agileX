@@ -36,6 +36,9 @@ MERGED_MODES = ('split', 'reject', 'off')   # perception.segmentation.merged_blo
 CAP_DEPTH_FRACTION = 0.05   # 'cap' points: z >= top_z - max(2 mm, this * object height)
 CAP_ABOVE_MIN_M = 0.003     # ... and z <= top_z + max(this, the band depth,
 CAP_ABOVE_RMS_K = 3.0       # this * table rms) (see cap_band)
+#: extra['_points_base'] (instance base-frame points without depth-edge pixels) keeps at
+#: most this many points (uniform stride).
+MAX_INSTANCE_POINTS = 4000
 
 _K3 = np.ones((3, 3), np.uint8)
 _BIG = np.float32(1e6)
@@ -679,6 +682,13 @@ def _crop(a: np.ndarray, box: Tuple[int, int, int, int]) -> np.ndarray:
     return a[y0:y1, x0:x1]
 
 
+def subsample_points(pts: np.ndarray, max_points: int = MAX_INSTANCE_POINTS) -> np.ndarray:
+    """Return at most max_points rows of pts (uniform stride) as Nx3 float32."""
+    pts = np.asarray(pts).reshape(-1, 3)
+    step = max(1, int(math.ceil(pts.shape[0] / float(max(1, int(max_points))))))
+    return np.ascontiguousarray(pts[::step], dtype=np.float32)
+
+
 def _make_detection(ctx: _Ctx, region: np.ndarray, box: Tuple[int, int, int, int],
                     comp_id: int) -> Optional[Detection]:
     p = ctx.params
@@ -777,6 +787,7 @@ def _make_detection(ctx: _Ctx, region: np.ndarray, box: Tuple[int, int, int, int
     extra['max_extend_m'] = max_ext
     fp = pts_ext if pts_ext.shape[0] >= 3 else pts_geom
     extra['_points_xy'] = fp[:, :2].astype(np.float32)
+    extra['_points_base'] = subsample_points(fp)
     # Center of the topmost points: on round objects seen obliquely it is a
     # better grasp point than the footprint center, whose far side is hidden.
     # All band points are used: near an oblique silhouette the top of a round

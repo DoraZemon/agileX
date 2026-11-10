@@ -49,6 +49,45 @@ RELEASE_OPEN_MARGIN = 0.01
 RELEASE_FULL_OPEN_TOL = 0.002
 #: detail text of a gripper 'fault' whose opening stopped short (robot/pyagxarm_arm.py).
 OPENING_SHORT = 'opening stopped'
+#: AGX gripper force range (N); a configured force above it is clamped.
+MAX_GRIPPER_FORCE = 3.0
+#: default tasks.<T>.gripper_force (N): light foam cubes (L1), 40-100 g models (L2, L3).
+TASK_GRIPPER_FORCE = {'L1': 1.5, 'L2': 2.5}
+#: stages whose target is a free-space pose (may lean up to max_tilt_free_deg).
+FREE_STAGES = ('pre', 'lift', 'transit', 'retreat', 'recover_retreat', 'recover_up',
+               'putback_lift', 'putback_retreat', 'up')
+
+
+def _force_value(v) -> Optional[float]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f >= 0.0 else None
+
+
+def gripper_force_for(cfg, task: Optional[str] = None) -> Optional[float]:
+    """
+    Return the grasp force (N) for task, clamped to MAX_GRIPPER_FORCE.
+
+    tasks.<task>.gripper_force, else TASK_GRIPPER_FORCE (L3 uses the L2 value,
+    tasks.L2.gripper_force, as its objects are the L2 models), else
+    robot.gripper.force. None when none of them is a number >= 0.
+    """
+    f = None
+    if task:
+        f = _force_value(cfg.get('tasks.%s.gripper_force' % task, None))
+        if f is None and task == 'L3':
+            f = _force_value(cfg.get('tasks.L2.gripper_force', None))
+        if f is None:
+            f = _force_value(TASK_GRIPPER_FORCE.get('L2' if task == 'L3' else task))
+    if f is None:
+        f = _force_value(cfg.get('robot.gripper.force', None))
+    if f is None:
+        return None
+    if f > MAX_GRIPPER_FORCE:
+        _LOG.warning('gripper force %.2f N above %.1f N: clamped', f, MAX_GRIPPER_FORCE)
+    return min(f, MAX_GRIPPER_FORCE)
 
 
 class _StepFailed(Exception):
@@ -84,10 +123,15 @@ class PickPlaceSkill:
 
     logger: core.logger.RunLogger-like object with ``event(kind, **fields)``, or
     None. Config: robot.gripper.*, grasp.linear_descent, grasp.verify_grasp,
-    runner.dry_run_hover, robot.motion.feedback_max_age_s.
+    runner.dry_run_hover, robot.motion.feedback_max_age_s. task: grasp force
+    from gripper_force_for(cfg, task) (None = robot.gripper.force, clamped);
+    force: explicit force (N) that wins over both. Moves to free-space poses
+    (FREE_STAGES) pass robot.workspace.max_tilt_free_deg to an arm that takes
+    a per-call tilt limit (task.reach.free_tilt_limit).
     """
 
-    def __init__(self, cfg, arm, clock, logger=None):
+    def __init__(self, cfg, arm, clock, logger=None, task: Optional[str] = None,
+                 force: Optional[float] = None):
         self.arm = arm
         self.clock = clock
         self.logger = logger
@@ -96,7 +140,10 @@ class PickPlaceSkill:
         if ew is None or not math.isfinite(float(ew)) or float(ew) < 0.0:
             raise ValueError('robot.gripper.empty_width must be a number >= 0, got %r' % (ew,))
         self.empty_width = float(ew)
-        self.force = cfg.get('robot.gripper.force', None)
+        f = _force_value(force)
+        self.force = gripper_force_for(cfg, task) if f is None else min(f, MAX_GRIPPER_FORCE)
+        from .reach import free_tilt_limit
+        self.free_tilt = free_tilt_limit(arm, cfg)
         self.width_tolerance = float(cfg.get('robot.gripper.width_tolerance', 0.015))
         self.linear_descent = bool(cfg.get('grasp.linear_descent', True))
         # robot.motion.linear_moves false: short vertical moves (lift, release,
@@ -177,7 +224,10 @@ class PickPlaceSkill:
     def _move(self, r: PickResult, stage: str, T: np.ndarray, linear: bool) -> MotionResult:
         self._check_abort(stage)
         t = self.clock.now()
-        m = self.arm.move_tcp(T, linear=linear)
+        if self.free_tilt is not None and stage in FREE_STAGES:
+            m = self.arm.move_tcp(T, linear=linear, max_tilt_deg=self.free_tilt)
+        else:
+            m = self.arm.move_tcp(T, linear=linear)
         self._record(r, stage, m.ok, m.error, t, target=_xyz(T), linear=bool(linear),
                      pos_err=m.pos_err)
         if not m.ok:

@@ -23,6 +23,67 @@ def _picks(rig):
     return [e for e in rig.logger.kinds('decision') if e['action'] == 'pick']
 
 
+def test_continuous_picks_use_fresh_geometry_after_the_retreat():
+    rig = Rig('L1')
+    objects = _l1(rig)
+    releases = []
+
+    def on_place(zone, label):
+        releases.append(rig.clock.now())
+        if len(releases) == 1:
+            # A neighboring object moves during the first placement.
+            objects[1].center_base[:2] = [0.33, 0.06]
+
+    rig.world.on_place = on_place
+    rep = rig.runner().run()
+    assert rep.ok and rep.placed == 3
+    assert _picks(rig)[1]['grasp_xyz'][:2] == pytest.approx([0.33, 0.06])
+    observations = rig.logger.kinds('observation')
+    assert observations[1]['stamp'] > (releases[0] + rig.arm.move_time
+                                       + rig.cfg.get('camera.settle_s'))
+    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 1
+
+
+@pytest.mark.parametrize('failure', ['empty', 'camera', 'perception'])
+def test_bad_view_after_place_returns_to_observe_and_continues(failure):
+    rig = Rig('L1')
+    _l1(rig)
+    original_process = rig.perception.process
+
+    def process(frame, T_base_camera, zones=None):
+        res = original_process(frame, T_base_camera, zones)
+        if len(rig.perception.calls) == 2:
+            if failure == 'empty':
+                res.detections = []
+            elif failure == 'perception':
+                raise RuntimeError('view unavailable')
+        return res
+
+    rig.perception.process = process
+    if failure == 'camera':
+        def on_place(zone, label):
+            if label == 'red':
+                rig.camera.none_frames = 1
+        rig.world.on_place = on_place
+    rep = rig.runner().run()
+    assert rep.ok and rep.placed == 3
+    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 2
+    assert len([e for e in rig.logger.kinds('decision')
+                if e['action'] == 'observe_fallback']) == 1
+
+
+@pytest.mark.parametrize('after_pick,at_end,moves', [
+    (True, False, 3), (False, True, 2), (True, True, 4),
+])
+def test_observe_return_options(after_pick, at_end, moves):
+    rig = Rig('L1', runner__return_to_observe_after_pick=after_pick,
+              runner__return_home_at_end=at_end)
+    _l1(rig)
+    rep = rig.runner().run()
+    assert rep.ok and rep.placed == 3
+    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == moves
+
+
 # ------------------------------------------------------------- observation failures
 def test_camera_outage_mid_run_does_not_end_the_round():
     rig = Rig('L1')
@@ -226,9 +287,10 @@ def test_shared_zone_spreads_releases_and_clears_earlier_objects():
     assert np.linalg.norm(r1[:2] - r2[:2]) >= (0.065 + 0.058) / 2.0
     for r in (r1, r2):
         assert np.all(np.abs(r[:2] - center) <= 0.08 - 0.029)
-    # The second object's bottom (TCP minus held offset) clears the 7 cm apple by 1 cm.
+    # Flat zone, footprints clear of each other: the second object's bottom (TCP minus
+    # held offset) is released place.release_height_flat above the card, not stacked.
     held2 = p2['grasp_xyz'][2] - 0.0
-    assert r2[2] - held2 >= 0.07 + 0.01 - 1e-9
+    assert r2[2] - held2 == pytest.approx(0.015)
 
 
 def test_spread_release_out_of_reach_falls_back_to_the_zone_center():

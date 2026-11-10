@@ -36,8 +36,9 @@ def test_l1_places_three_within_limit():
     assert 0 < rep.elapsed < 180
     assert rig.world.placed == {'zone_red': ['red'], 'zone_green': ['green'],
                                 'zone_blue': ['blue']}
-    # Parked at the observe pose before every capture: prep, after picks 1 and 2, home.
-    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 1 + 2 + 1
+    # Only the initial observe move: fresh fixed-camera views between picks, no home.
+    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 1
+    assert rig.arm.commands[-1][0] == 'move_tcp'
     kinds = [c[0] for c in rig.arm.commands]
     first_tcp = kinds.index('move_tcp')
     assert kinds[:first_tcp] == ['move_joints', 'gripper', 'gripper']
@@ -112,13 +113,13 @@ def test_targets_restrict_and_order_labels():
 def test_deadline_stops_new_picks():
     rig = Rig('L1')
     _l1(rig)
-    rig.cfg.set('tasks.L1.time_limit_s', 30)
+    rig.cfg.set('tasks.L1.time_limit_s', 25)
     rep = rig.runner().run()
     assert rep.stop_reason == 'timeout' and not rep.ok
     assert 1 <= rep.placed < 3
     picks = [e for e in rig.logger.kinds('decision') if e['action'] == 'pick']
     assert all(e['remaining'] >= 12.0 for e in picks)
-    assert rep.elapsed <= 30
+    assert rep.elapsed <= 25
 
 
 def test_comm_fault_stops_immediately_without_more_commands():
@@ -127,7 +128,8 @@ def test_comm_fault_stops_immediately_without_more_commands():
     state = {}
 
     def fn(kind, target, linear, idx):
-        if idx == 9:                                    # descent of the second pick
+        if (kind == 'move_tcp' and linear and target[2, 3] < 0.03
+                and np.linalg.norm(target[:2, 3] - [0.30, 0.05]) < 0.01):
             state['n'] = len(rig.arm.commands)
             return MotionResult(ok=False, error='comm')
         return None
@@ -235,6 +237,7 @@ def test_bad_frames_are_retried_until_the_deadline(mode):
 
 def test_observe_move_failure_is_a_fault():
     rig = Rig('L1')
+    rig.cfg.set('runner.return_to_observe_after_pick', True)
     _l1(rig)
     rig.arm.fail_fn = lambda kind, T, lin, idx: (MotionResult(ok=False, error='timeout')
                                                  if kind == 'move_joints' and idx > 0
@@ -245,6 +248,7 @@ def test_observe_move_failure_is_a_fault():
 
 def test_eye_in_hand_uses_flange_pose_at_capture():
     from test_task_fakes import FakeExt
+    from cube_task.core.transforms import top_down_T
     rig = Rig('L1', camera__mount='eye_in_hand')
     _l1(rig)
     T_fc = np.eye(4)
@@ -252,8 +256,9 @@ def test_eye_in_hand_uses_flange_pose_at_capture():
     rig.ext = FakeExt(T_fc, 'eye_in_hand')
     rep = rig.runner().run()
     assert rep.ok
-    flange_at_observe = rig.arm.get_flange_pose().value      # observe pose (home after run)
-    assert np.allclose(rig.perception.calls[0], flange_at_observe @ T_fc)
+    flange_at_observe = top_down_T(0.05, 0.25, 0.30, 0.0)    # FakeArm's observe pose
+    assert all(np.allclose(T, flange_at_observe @ T_fc) for T in rig.perception.calls)
+    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 3
 
 
 def test_l3_instructions():

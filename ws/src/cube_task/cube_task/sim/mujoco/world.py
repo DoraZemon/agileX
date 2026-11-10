@@ -57,7 +57,8 @@ class MujocoWorld:
     or None before attach), info (scenario info), meta (names / ids for the
     arm, camera and recorder, see scene._make_meta), zones (name -> core Zone
     with the real floor z), objects (ObjectRecord list), table_z, tcp_z
-    (fingertip end along link6 z = robot.tcp_offset z), max_width, xml_path.
+    (fingertip end along link6 z = robot.tcp_offset z), max_width (gripper
+    stroke, m), materials ('legacy' | 'official'), xml_path.
     Reads take sim.lock when attached, so a camera thread sees a consistent state.
     """
 
@@ -79,6 +80,7 @@ class MujocoWorld:
         self.tcp_z = float(meta['tcp_z'])
         self.max_width = float(meta['max_width'])
         self.xml_path = str(meta.get('xml_path', ''))
+        self.materials = str(meta.get('materials', 'legacy'))
         self.sim: Optional[MujocoSim] = None
         self._lock = threading.RLock()
         if clock is not None:
@@ -315,7 +317,8 @@ class MujocoWorld:
         Return a config overlay to deep_merge over the scenario overlay of info.
 
         Sets robot.backend / camera.backend 'mujoco', robot.tcp_offset (MuJoCo
-        fingertip), robot.gripper.max_width, perception.table.expected_z, the
+        fingertip), robot.gripper.max_width (the scene's stroke, see
+        sim.mujoco.gripper_max_width), perception.table.expected_z, the
         zones with their real floors, sim.intrinsics of the rendered camera,
         sim.T_base_camera / sim.T_flange_camera as rendered and
         camera.extrinsics_inline: the rendered pose with extrinsics_error
@@ -349,7 +352,7 @@ class MujocoWorld:
                     'T_flange_camera': _as_list(self.T_flange_camera),
                     'extrinsics_error': err,
                     'mujoco': {'camera': self.task_camera, 'table_z': self.table_z,
-                               'tcp_z': self.tcp_z}},
+                               'tcp_z': self.tcp_z, 'gripper_max_width': self.max_width}},
         }
 
 

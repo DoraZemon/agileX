@@ -151,7 +151,7 @@ def test_place_plan_flat_and_walled():
     flat = Zone('flat', np.array([0.2, 0.3, 0.01]))
     p = pp.plan(flat, held_offset=0.015, transit_z=0.2)
     assert p.feasible
-    assert p.T_release[2, 3] == pytest.approx(0.01 + 0.06 + 0.015)
+    assert p.T_release[2, 3] == pytest.approx(0.01 + 0.015 + 0.015)   # release_height_flat
     assert p.T_pre[2, 3] == pytest.approx(0.2)
     assert p.T_retreat[2, 3] == pytest.approx(p.T_release[2, 3] + 0.10)
     assert p.open_width == pytest.approx(0.07)

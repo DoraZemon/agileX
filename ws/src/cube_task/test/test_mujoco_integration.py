@@ -193,7 +193,15 @@ def test_run_task_refuses_video_outside_mujoco_mode(capsys):
     assert '--mode mujoco' in capsys.readouterr().out
 
 
-def test_wrapper_script_runs_the_venv_python(tmp_path):
+@pytest.mark.parametrize('display,viewer,backend,expected', [
+    (':0', False, None, 'egl'),
+    (':0', True, None, 'glfw'),
+    ('wayland', True, None, 'glfw'),
+    (None, True, None, 'egl'),
+    (':0', True, 'egl', 'egl'),
+    (':0', False, 'glfw', 'glfw'),
+])
+def test_wrapper_script_runs_the_venv_python(tmp_path, display, viewer, backend, expected):
     import subprocess
     root = Path(__file__).resolve().parents[1]
     fake = tmp_path / 'py'
@@ -201,10 +209,20 @@ def test_wrapper_script_runs_the_venv_python(tmp_path):
     fake.chmod(0o755)
     env = dict(os.environ, MUJOCO_PYTHON=str(fake), PYTHONPATH='/opt/ros/x')
     env.pop('MUJOCO_GL', None)
-    res = subprocess.run(['bash', str(root / 'scripts' / 'mujoco_run.sh'), 'run_task', '-h'],
+    env.pop('DISPLAY', None)
+    env.pop('WAYLAND_DISPLAY', None)
+    if display == 'wayland':
+        env['WAYLAND_DISPLAY'] = 'wayland-0'
+    elif display:
+        env['DISPLAY'] = display
+    if backend is not None:
+        env['MUJOCO_GL'] = backend
+    args = ['run_task', '-h'] + (['--viewer'] if viewer else [])
+    res = subprocess.run(['bash', str(root / 'scripts' / 'mujoco_run.sh'), *args],
                          env=env, capture_output=True, text=True, timeout=10)
     assert res.returncode == 0
-    assert res.stdout.strip() == 'egl|unset|%s|-m cube_task run_task -h' % root
+    assert res.stdout.strip() == '%s|unset|%s|-m cube_task %s' % (
+        expected, root, ' '.join(args))
 
 
 class _FakeWall:

@@ -102,6 +102,33 @@ WOOD = {'friction': (0.9, 0.005, 0.0005), 'density': 700.0, 'mass': (0.010, 0.08
 PLASTIC = {'friction': (0.8, 0.005, 0.0005), 'density': 250.0, 'mass': (0.015, 0.060),
            'condim': 6}
 
+# Official competition materials (scene materials 'official', or SimObject.material).
+# Object geoms get priority 1, so their friction / solref / solimp / condim decide
+# every contact (finger pads, table, cards): smooth plastic on the rubber pads
+# ~0.55, textured EVA foam ~1.0. Foam is slightly soft (solref time constant
+# 0.01 s, lower solimp: a 1.5 N grip squeezes a cube ~1 mm per side); its 50 mm
+# cube weighs ~10 g (80 kg/m^3). Plastic models
+# are hollow shells (shell inertia) with the organizers' masses (OFFICIAL_MASS).
+FOAM = {'friction': (1.0, 0.01, 0.0005), 'density': 80.0, 'mass': (0.002, 0.050),
+        'condim': 4, 'solref': (0.01, 1.0), 'solimp': (0.9, 0.95, 0.001), 'priority': 1,
+        'shell': False}
+PLASTIC_MODEL = {'friction': (0.55, 0.005, 0.0005), 'density': 250.0, 'mass': (0.015, 0.150),
+                 'condim': 6, 'solimp': PAD_SOLIMP, 'priority': 1, 'shell': True}
+MATERIALS = {'wood': WOOD, 'legacy_plastic': PLASTIC, 'foam': FOAM, 'plastic': PLASTIC_MODEL}
+SCENE_MATERIALS = ('legacy', 'official')
+# kg, official L2 models (organizers' table); L1 foam cubes from FOAM density.
+OFFICIAL_MASS = {'cucumber': 0.043, 'pear': 0.100, 'banana': 0.050, 'potato': 0.057,
+                 'persimmon': 0.100, 'bell_pepper': 0.082}
+# Official zones: flat 230 g/m^2 hard-card sheets, 0.3 mm thick, no walls. With
+# sim.mujoco.card_collision (default true) the card collides, its top 0.3 mm above
+# the table, so objects can slide / roll off it.
+CARD_THICKNESS = 0.0003
+CARD_FRICTION = (0.45, 0.005, 0.0001)
+
+# Gripper stroke (sim.mujoco.gripper_max_width): the menagerie model opens 0.070 m;
+# 0.100 (new AGX gripper) widens the finger joint ranges, finger geometry unchanged.
+GRIPPER_WIDTH_RANGE = (0.04, 0.12)
+
 # Offscreen multisampling. 0: depth (and color) are sampled at pixel centers,
 # exact to ~0.01 mm. With MSAA the depth resolve takes an off-center sample:
 # -0.5 mm at 0.74 m on the tilted table of the eye_to_hand view (4 samples).
@@ -270,14 +297,99 @@ def piper_geometry(assets_dir: str) -> Dict[str, Any]:
 
 
 # ------------------------------------------------------------------ objects
-def object_material(obj: SimObject) -> Dict[str, Any]:
-    """Return the contact / mass material of an object (wooden block or plastic model)."""
-    return WOOD if obj.shape == 'box' else PLASTIC
+COMPOUND_PARTS = {'sphere': 1, 'ellipsoid': 3, 'cylinder': 2, 'box': 3, 'capsule': 2}
+
+
+def scene_materials(info: Optional[Dict[str, Any]] = None, objects: Sequence[Any] = (),
+                    cfg: Any = None) -> str:
+    """
+    Return the material set of a scene: 'legacy' or 'official'.
+
+    info['materials'] wins, then config sim.mujoco.materials; without either,
+    'official' when an object is 'compound' or carries a material / mass,
+    else 'legacy' (wooden blocks, light plastic models, visual mats).
+    """
+    m = (info or {}).get('materials') or _cfg_get(cfg, 'sim.mujoco.materials', None)
+    if m is None:
+        m = 'official' if any(o.shape == 'compound' or getattr(o, 'material', None)
+                              or getattr(o, 'mass', None) is not None
+                              for o in objects) else 'legacy'
+    if m not in SCENE_MATERIALS:
+        raise ValueError('scene materials must be one of %s, got %r' % (SCENE_MATERIALS, m))
+    return str(m)
+
+
+def object_material_name(obj: SimObject, materials: str = 'legacy') -> str:
+    """Return the MATERIALS key of an object (its own material, else by shape)."""
+    name = getattr(obj, 'material', None)
+    if name:
+        if name not in MATERIALS:
+            raise ValueError('object %s: unknown material %r (expected one of %s)'
+                             % (obj.name, name, sorted(MATERIALS)))
+        return str(name)
+    if materials == 'official':
+        return 'foam' if obj.shape == 'box' else 'plastic'
+    return 'wood' if obj.shape == 'box' else 'legacy_plastic'
+
+
+def object_material(obj: SimObject, materials: str = 'legacy') -> Dict[str, Any]:
+    """Return the contact / mass material of an object (see MATERIALS)."""
+    return MATERIALS[object_material_name(obj, materials)]
+
+
+def _compound_part(obj_name: str, k: int, p: Dict[str, Any]
+                   ) -> Tuple[str, Dict[str, Any], float]:
+    """Return (geom type, MJCF attributes, volume) of one part of a 'compound' object."""
+    what = 'object %s part %d' % (obj_name, k)
+    kind = str(p.get('shape'))
+    if kind not in COMPOUND_PARTS:
+        raise ValueError('%s: unknown shape %r (expected one of %s)'
+                         % (what, kind, sorted(COMPOUND_PARTS)))
+    s = [float(v) for v in p.get('size', ())]
+    if len(s) != COMPOUND_PARTS[kind] or not all(math.isfinite(v) and v > 0 for v in s):
+        raise ValueError('%s: %s needs %d positive sizes, got %r'
+                         % (what, kind, COMPOUND_PARTS[kind], p.get('size')))
+    pos = np.asarray(p.get('pos', (0.0, 0.0, 0.0)), dtype=float).reshape(3)
+    yaw = float(p.get('yaw', 0.0) or 0.0)
+    if not (np.all(np.isfinite(pos)) and math.isfinite(yaw)):
+        raise ValueError('%s: non-finite pos / yaw' % what)
+    attrs: Dict[str, Any] = {'pos': pos}
+    if kind == 'capsule':
+        r, hl = s
+        u = hl * np.array([math.cos(yaw), math.sin(yaw), 0.0])
+        attrs = {'size': [r], 'fromto': np.concatenate([pos - u, pos + u])}
+        vol = math.pi * r * r * 2.0 * hl + 4.0 / 3.0 * math.pi * r ** 3
+    else:
+        if yaw != 0.0:
+            attrs['quat'] = _quat_wxyz(rot_z(yaw))
+        if kind == 'sphere':
+            attrs['size'] = [s[0]]
+            vol = 4.0 / 3.0 * math.pi * s[0] ** 3
+        elif kind == 'ellipsoid':
+            attrs['size'] = s
+            vol = 4.0 / 3.0 * math.pi * s[0] * s[1] * s[2]
+        elif kind == 'cylinder':
+            attrs['size'] = [s[0], s[1] / 2.0]
+            vol = math.pi * s[0] ** 2 * s[1]
+        else:
+            attrs['size'] = [v / 2.0 for v in s]
+            vol = s[0] * s[1] * s[2]
+    color = p.get('color_bgr')
+    if color is not None:
+        c = [int(v) for v in color]
+        if len(c) != 3 or not all(0 <= v <= 255 for v in c):
+            raise ValueError('%s: color_bgr must be 3 values in 0..255, got %r' % (what, color))
+        attrs['_color_bgr'] = c
+    return kind, attrs, vol
 
 
 def _object_parts(obj: SimObject) -> List[Tuple[str, Dict[str, Any], float]]:
     """Return [(geom type, MJCF attributes, volume m^3)] in the object frame (bottom center)."""
     s = obj.size
+    if obj.shape == 'compound':
+        if not len(s):
+            raise ValueError('object %s: compound needs at least one part' % obj.name)
+        return [_compound_part(obj.name, k, p) for k, p in enumerate(s)]
     if obj.shape == 'box':
         return [('box', {'size': [v / 2.0 for v in s], 'pos': [0.0, 0.0, s[2] / 2.0]},
                  s[0] * s[1] * s[2])]
@@ -299,9 +411,40 @@ def _object_parts(obj: SimObject) -> List[Tuple[str, Dict[str, Any], float]]:
              math.pi * r * r * float(np.linalg.norm(b - a)) + ball) for a, b in segs]
 
 
-def object_mass(obj: SimObject) -> float:
-    """Return the simulated mass (kg): material density x volume, clipped to its range."""
-    mat = object_material(obj)
+def _part_area(gtype: str, attrs: Dict[str, Any]) -> float:
+    """Return the surface area (m^2) of a part, to spread a shell's mass over its parts."""
+    s = [float(v) for v in attrs['size']]
+    if gtype == 'sphere':
+        return 4.0 * math.pi * s[0] ** 2
+    if gtype == 'ellipsoid':
+        a, b, c, p = s[0], s[1], s[2], 1.6075          # Knud Thomsen, error < 1.1 %
+        return 4.0 * math.pi * (((a * b) ** p + (a * c) ** p + (b * c) ** p) / 3.0) ** (1.0 / p)
+    if gtype == 'cylinder':
+        return 2.0 * math.pi * s[0] * (2.0 * s[1]) + 2.0 * math.pi * s[0] ** 2
+    if gtype == 'capsule':
+        ft = np.asarray(attrs['fromto'], dtype=float)
+        return (2.0 * math.pi * s[0] * float(np.linalg.norm(ft[3:] - ft[:3]))
+                + 4.0 * math.pi * s[0] ** 2)
+    return 8.0 * (s[0] * s[1] + s[1] * s[2] + s[2] * s[0])
+
+
+def object_mass(obj: SimObject, materials: str = 'legacy') -> float:
+    """
+    Return the simulated mass (kg).
+
+    SimObject.mass when set; official plastic models: OFFICIAL_MASS of the
+    label; else material density x volume, clipped to the material's range.
+    """
+    given = getattr(obj, 'mass', None)
+    if given is not None:
+        m = float(given)
+        if not (math.isfinite(m) and 0.0 < m <= 5.0):
+            raise ValueError('object %s: mass must be in (0, 5] kg, got %r' % (obj.name, given))
+        return m
+    name = object_material_name(obj, materials)
+    if name == 'plastic' and obj.label in OFFICIAL_MASS:
+        return OFFICIAL_MASS[obj.label]
+    mat = MATERIALS[name]
     parts = _object_parts(obj)
     if obj.shape == 'capsule_chain' and parts and parts[0][0] == 'capsule':
         r = obj.size[0]
@@ -313,32 +456,62 @@ def object_mass(obj: SimObject) -> float:
     return float(min(max(vol * mat['density'], lo), hi))
 
 
-def _add_object(wb: ET.Element, asset: ET.Element, obj: SimObject, T: np.ndarray) -> str:
+def _add_object(wb: ET.Element, asset: ET.Element, obj: SimObject, T: np.ndarray,
+                materials: str = 'legacy') -> str:
     """Add obj as a free body at pose T (bottom-center frame); return the body name."""
     name = 'obj_%s' % _safe(obj.name)
-    mat = object_material(obj)
+    mat = object_material(obj, materials)
     _el(asset, 'material', name='ct_' + name, rgba=_rgba(obj.color_bgr), specular=0.15,
         shininess=0.3)
     body = _el(wb, 'body', name=name, pos=T[:3, 3], quat=_quat_wxyz(T[:3, :3]))
     _el(body, 'freejoint', name=name + '_free')
     parts = _object_parts(obj)
-    total = sum(v for _t, _a, v in parts)
-    mass = object_mass(obj)
-    for k, (gtype, attrs, vol) in enumerate(parts):
-        _el(body, 'geom', name='%s_g%d' % (name, k), type=gtype, material='ct_' + name,
-            friction=mat['friction'], condim=mat['condim'], mass=mass * vol / total, **attrs)
+    shell = bool(mat.get('shell', False))
+    weights = [_part_area(t, a) if shell else v for t, a, v in parts]
+    total = sum(weights)
+    mass = object_mass(obj, materials)
+    for k, ((gtype, attrs, _vol), w) in enumerate(zip(parts, weights)):
+        attrs = dict(attrs)
+        color = attrs.pop('_color_bgr', None)
+        material = 'ct_' + name
+        if color is not None:
+            material = 'ct_%s_p%d' % (name, k)
+            _el(asset, 'material', name=material, rgba=_rgba(color), specular=0.15,
+                shininess=0.3)
+        _el(body, 'geom', name='%s_g%d' % (name, k), type=gtype, material=material,
+            friction=mat['friction'], condim=mat['condim'], mass=mass * w / total,
+            solref=mat.get('solref'), solimp=mat.get('solimp'), priority=mat.get('priority'),
+            shellinertia='true' if shell else None, **attrs)
     return name
 
 
 # -------------------------------------------------------------------- zones
-def zone_floor_z(zone: Zone, table_z: float) -> float:
-    """Return the z an object rests at in the zone: table_z for mats, the bin floor top else."""
-    return float(table_z) + (BIN_FLOOR if zone.wall_height > 0.0 else 0.0)
+FLAT_KINDS = ('mat', 'card', 'card_visual')
+
+
+def zone_floor_z(zone: Zone, table_z: float, flat: str = 'mat') -> float:
+    """
+    Return the z an object rests at in the zone.
+
+    Walled bins / trays: the bin floor top. Flat zones: table_z for legacy
+    mats and visual-only cards, the card top for colliding cards (flat 'card').
+    """
+    if zone.wall_height > 0.0:
+        return float(table_z) + BIN_FLOOR
+    return float(table_z) + (CARD_THICKNESS if flat == 'card' else 0.0)
 
 
 def _add_zone(wb: ET.Element, asset: ET.Element, zone: Zone, color_bgr: Sequence[int],
-              table_z: float) -> str:
-    """Add a mat (visual box) or a walled bin / tray; return the body name."""
+              table_z: float, flat: str = 'mat') -> str:
+    """
+    Add a flat zone or a walled bin / tray; return the body name.
+
+    flat (zones without walls): 'mat' visual 0.5 mm box ('<body>_mat', legacy);
+    'card' 0.3 mm hard card that collides ('<body>_card', top flush 0.3 mm above
+    the table); 'card_visual' the same card without collision.
+    """
+    if flat not in FLAT_KINDS:
+        raise ValueError('flat zone kind must be one of %s, got %r' % (FLAT_KINDS, flat))
     name = 'zn_%s' % _safe(zone.name)
     _el(asset, 'material', name='ct_' + name, rgba=_rgba(color_bgr), specular=0.05,
         shininess=0.1)
@@ -348,10 +521,16 @@ def _add_zone(wb: ET.Element, asset: ET.Element, zone: Zone, color_bgr: Sequence
     body = _el(wb, 'body', name=name, pos=[c[0], c[1], table_z],
                quat=_quat_wxyz(rot_z(float(zone.yaw))))
     hx, hy = zone.size[0] / 2.0, zone.size[1] / 2.0
-    if zone.wall_height <= 0.0:
+    if zone.wall_height <= 0.0 and flat == 'mat':
         _el(body, 'geom', name=name + '_mat', type='box', size=[hx, hy, MAT_THICKNESS / 2.0],
             pos=[0.0, 0.0, MAT_THICKNESS / 2.0], material='ct_' + name, contype=0,
             conaffinity=0, group=1)
+        return name
+    if zone.wall_height <= 0.0:
+        off = {} if flat == 'card' else {'contype': 0, 'conaffinity': 0, 'group': 1}
+        _el(body, 'geom', name=name + '_card', type='box', size=[hx, hy, CARD_THICKNESS / 2.0],
+            pos=[0.0, 0.0, CARD_THICKNESS / 2.0], material='ct_' + name,
+            friction=CARD_FRICTION, **off)
         return name
     t = WALL_THICKNESS
     _el(body, 'geom', name=name + '_floor', type='box', size=[hx, hy, BIN_FLOOR / 2.0],
@@ -375,8 +554,31 @@ def _find_body(root: ET.Element, name: str) -> ET.Element:
     return b
 
 
-def _setup_robot(root: ET.Element, tcp_z: float, timestep: float, noslip: int) -> List[str]:
-    """Set physics options, name the finger pads, add the tcp / flange sites. Return pad names."""
+def _set_gripper_width(root: ET.Element, max_width: float) -> None:
+    """Set the finger joint ranges and the gripper actuator ctrlrange to a stroke of max_width."""
+    half = float(max_width) / 2.0
+    for name, rng in ((FINGER_JOINT, [0.0, half]), (FINGER_MIMIC_JOINT, [-half, 0.0])):
+        j = root.find(".//joint[@name='%s']" % name)
+        if j is None:
+            raise RuntimeError('%s has no joint %r' % (PIPER_XML, name))
+        j.set('range', _f(rng))
+    act = root.find(".//actuator/position[@name='%s']" % GRIPPER_ACTUATOR)
+    if act is None:
+        raise RuntimeError('%s has no position actuator %r' % (PIPER_XML, GRIPPER_ACTUATOR))
+    act.set('inheritrange', '0')
+    act.set('ctrllimited', 'true')
+    act.set('ctrlrange', _f([0.0, half]))
+
+
+def _setup_robot(root: ET.Element, tcp_z: float, timestep: float, noslip: int,
+                 max_width: Optional[float] = None) -> List[str]:
+    """
+    Set physics options, name the finger pads, add the tcp / flange sites. Return pad names.
+
+    max_width: gripper stroke (m); None keeps the model's finger joint ranges.
+    """
+    if max_width is not None:
+        _set_gripper_width(root, max_width)
     opt = root.find('option')
     if opt is None:
         opt = _el(root, 'option')
@@ -542,7 +744,11 @@ def build_scene(info: Dict[str, Any], cfg: Any = None, assets_dir: Optional[str]
     info: from sim.scenarios.make_scenario(task, seed, mount, difficulty).
     cfg: optional core Config or nested dict; reads robot.poses.home_joints
     (initial arm pose, default zeros), sim.mujoco.assets_dir,
-    sim.mujoco.timestep (0.002 s) and sim.mujoco.noslip_iterations (5).
+    sim.mujoco.timestep (0.002 s), sim.mujoco.noslip_iterations (5),
+    sim.mujoco.gripper_max_width (null = the model's 0.070 m stroke; 0.100 widens
+    the finger joint ranges), sim.mujoco.materials ('legacy' | 'official', see
+    scene_materials; info['materials'] wins) and sim.mujoco.card_collision
+    (true: official flat zones are 0.3 mm cards that collide).
     assets_dir: directory of piper.xml (default DEFAULT_ASSETS_DIR).
     clock: core.clock.SimClock; when given, the physics engine is created now,
     else call MujocoWorld.attach(clock) later. world: the scenario SimWorld
@@ -562,6 +768,18 @@ def build_scene(info: Dict[str, Any], cfg: Any = None, assets_dir: Optional[str]
     if not 1e-4 <= timestep <= 0.01:
         raise ValueError('sim.mujoco.timestep must be in [0.0001, 0.01] s, got %r' % timestep)
     noslip = int(_cfg_get(cfg, 'sim.mujoco.noslip_iterations', NOSLIP_ITERATIONS))
+    width = _cfg_get(cfg, 'sim.mujoco.gripper_max_width', None)
+    if width is not None:
+        width = float(width)
+        if not (math.isfinite(width)
+                and GRIPPER_WIDTH_RANGE[0] <= width <= GRIPPER_WIDTH_RANGE[1]):
+            raise ValueError('sim.mujoco.gripper_max_width must be in [%g, %g] m, got %r'
+                             % (GRIPPER_WIDTH_RANGE + (width,)))
+        geo = dict(geo, max_width=round(width, 6))
+    materials = scene_materials(info, sim_world.objects, cfg)
+    flat = 'mat'
+    if materials == 'official':
+        flat = 'card' if bool(_cfg_get(cfg, 'sim.mujoco.card_collision', True)) else 'card_visual'
     home = [float(v) for v in _cfg_get(cfg, 'robot.poses.home_joints', [0.0] * 6)]
     if len(home) != 6 or not all(math.isfinite(v) for v in home):
         raise ValueError('robot.poses.home_joints must be 6 finite angles, got %r' % (home,))
@@ -576,7 +794,7 @@ def build_scene(info: Dict[str, Any], cfg: Any = None, assets_dir: Optional[str]
 
     root = ET.parse(str(assets / PIPER_XML)).getroot()
     root.set('model', 'cube_task_%s_%s_s%d' % (task, difficulty, seed))
-    pads = _setup_robot(root, tcp_z, timestep, noslip)
+    pads = _setup_robot(root, tcp_z, timestep, noslip, max_width=width)
     if mount == 'eye_in_hand':
         _wrist_camera(root, np.asarray(info['T_flange_camera'], dtype=float), fovy)
     asset, wb = _add_environment(root, table_z, sim_world.table_color_bgr)
@@ -584,9 +802,11 @@ def build_scene(info: Dict[str, Any], cfg: Any = None, assets_dir: Optional[str]
     zones: Dict[str, Zone] = {}
     zone_bodies: Dict[str, str] = {}
     for name, z in info['zones'].items():
-        zone_bodies[name] = _add_zone(wb, asset, z, colors.get(name, (110, 110, 110)), table_z)
+        zone_bodies[name] = _add_zone(wb, asset, z, colors.get(name, (110, 110, 110)), table_z,
+                                      flat)
         c = np.asarray(z.center, dtype=float)
-        zones[name] = Zone(name=str(name), center=np.array([c[0], c[1], zone_floor_z(z, table_z)]),
+        floor = zone_floor_z(z, table_z, flat)
+        zones[name] = Zone(name=str(name), center=np.array([c[0], c[1], floor]),
                            size=(float(z.size[0]), float(z.size[1])), yaw=float(z.yaw),
                            wall_height=float(z.wall_height), release_height=z.release_height,
                            label=str(z.label))
@@ -595,9 +815,10 @@ def build_scene(info: Dict[str, Any], cfg: Any = None, assets_dir: Optional[str]
         T = obj.T_base_obj
         T[2, 3] += table_z - sim_world.table_z
         c = obj.center_xy()
-        if any(z.wall_height > 0.0 and z.contains_xy(c[0], c[1]) for z in zones.values()):
-            T[2, 3] += BIN_FLOOR
-        bodies[obj.name] = _add_object(wb, asset, obj, T)
+        inside = [z for z in zones.values() if z.contains_xy(c[0], c[1])]
+        if inside:
+            T[2, 3] += max(float(z.center[2]) for z in inside) - table_z
+        bodies[obj.name] = _add_object(wb, asset, obj, T, materials)
     if mount == 'eye_to_hand':
         _eye_to_hand_camera(wb, np.asarray(info['T_base_camera'], dtype=float), fovy, table_z)
     _video_cameras(wb)
@@ -608,6 +829,10 @@ def build_scene(info: Dict[str, Any], cfg: Any = None, assets_dir: Optional[str]
     _init_arm(mj, model, data, home)
     meta = _make_meta(mj, model, info, geo, home, pads, zone_bodies, bodies, sim_world, path)
     meta['fovy'] = fovy
+    meta['materials'] = materials
+    meta['flat_zones'] = flat
+    meta['object_materials'] = {o.name: object_material_name(o, materials)
+                                for o in sim_world.objects}
     objects = _object_records(mj, model, sim_world, bodies)
     _LOG.debug('scene %s: %d objects, %d zones, table_z %.4f, tcp_z %.4f',
                path.name, len(objects), len(zones), table_z, tcp_z)

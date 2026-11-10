@@ -267,7 +267,11 @@ runner:
   min_time_for_pick_s: 12.0    # do not start a new pick with less time left
   observe_retry_s: 0.5
   start_on_enter: true         # wait for Enter before the timed run starts
-  return_home_at_end: true
+  # Fixed camera: take fresh images at the post-place retreat pose and continue.
+  # Wrist cameras always return to the observe pose; an unusable in-place view
+  # also falls back there. true restores the return after every pick.
+  return_to_observe_after_pick: false
+  return_home_at_end: false     # true: return to the observe pose after the round
   dry_run_hover: 0.05          # --dry-run: stay this high above grasp / release poses
 
 sim:

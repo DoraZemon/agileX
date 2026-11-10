@@ -5,8 +5,9 @@ Scene: a bounded table rectangle (TABLE_SIZE centered at TABLE_CENTER in base
 XY, at world.table_z) above a darker floor FLOOR_DROP lower, zone mats 1 mm
 above their floor with optional walls, the objects and the gripper. Every
 primitive is intersected in its own frame (slab test for boxes, scaled unit
-sphere for ellipsoids, quadratic + caps for cylinders, spheres for chains)
-and only inside the image rectangle covered by its projected local bounds.
+sphere for ellipsoids, quadratic + caps for cylinders, spheres for chains,
+cylinder + end spheres for the capsule parts of compound objects) and only
+inside the image rectangle covered by its projected local bounds.
 
 Depth is the z coordinate in the camera optical frame (x right, y down, z
 forward), float32 meters, 0 = invalid, exactly as a registered depth camera
@@ -176,6 +177,36 @@ def _hit_cylinder(o: np.ndarray, d: np.ndarray, r: float, h: float):
     return t, n
 
 
+def _hit_capsule(o: np.ndarray, d: np.ndarray, r: float, hl: float):
+    """Capsule along local x: segment -hl..hl, radius r."""
+    a = d[:, 1] ** 2 + d[:, 2] ** 2
+    b = 2.0 * (o[1] * d[:, 1] + o[2] * d[:, 2])
+    c = o[1] ** 2 + o[2] ** 2 - r * r
+    disc = b * b - 4.0 * a * c
+    ok = (disc >= 0.0) & (a > 1e-12)
+    ts = (-b - np.sqrt(np.where(ok, disc, 0.0))) / (2.0 * np.where(a > 1e-12, a, 1.0))
+    xs = o[0] + ts * d[:, 0]
+    ok &= (ts > 1e-6) & (np.abs(xs) <= hl)
+    t = np.where(ok, ts, np.inf)
+    cap = np.zeros(len(d), dtype=int)
+    aa = np.einsum('ij,ij->i', d, d)
+    for k, cx in ((1, hl), (2, -hl)):
+        oc = o - np.array([cx, 0.0, 0.0])
+        bb = d @ oc
+        cc = float(oc @ oc) - r * r
+        dd = bb * bb - aa * cc
+        hit = dd >= 0.0
+        tc = (-bb - np.sqrt(np.where(hit, dd, 0.0))) / aa
+        hit &= (tc > 1e-6) & (tc < t)
+        t = np.where(hit, tc, t)
+        cap[hit] = k
+    p = o + np.where(np.isfinite(t), t, 0.0)[:, None] * d
+    n = p.copy()
+    n[:, 0] = np.where(cap == 1, p[:, 0] - hl, np.where(cap == 2, p[:, 0] + hl, 0.0))
+    n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+    return t, n
+
+
 # --------------------------------------------------------------- primitives
 class _Prim:
     """One renderable primitive in its own frame T (base <- prim)."""
@@ -237,7 +268,9 @@ def _object_prims(world: SimWorld) -> List[_Prim]:
         T = obj.T_base_obj
         for prim in obj.primitives():
             kind = prim[0]
-            if kind == 'box':
+            if kind == 'part':
+                out.append(_part_prim(T, prim, obj.texture_seed))
+            elif kind == 'box':
                 _, center, half = prim
                 out.append(_box_prim(T @ make_T(np.eye(3), center), half, obj.color_bgr,
                                      0.22, 0.06, obj.texture_seed))
@@ -259,6 +292,25 @@ def _object_prims(world: SimWorld) -> List[_Prim]:
                                  centers.min(axis=0) - r, centers.max(axis=0) + r, 0.22,
                                  0.06, obj.texture_seed))
     return out
+
+
+def _part_prim(T_base_obj: np.ndarray, prim: Tuple[Any, ...], seed: int) -> _Prim:
+    """Return the _Prim of one compound part ('part', kind, T_obj_part, params, color)."""
+    _, kind, T_op, prm, color = prim
+    T = T_base_obj @ T_op
+    if kind == 'box':
+        return _box_prim(T, np.array(prm) / 2.0, color, 0.22, 0.06, seed)
+    if kind == 'ellipsoid':
+        radii = np.array(prm, dtype=float)
+        return _Prim('ellipsoid', T, (np.zeros(3), radii), color, -radii, radii, 0.25, 0.06,
+                     seed)
+    if kind == 'cylinder':
+        r, h = prm
+        return _Prim('cylinder', T, (r, h), color, np.array([-r, -r, 0.0]),
+                     np.array([r, r, h]), 0.22, 0.06, seed)
+    r, hl = prm
+    return _Prim('capsule', T, (r, hl), color, np.array([-hl - r, -r, -r]),
+                 np.array([hl + r, r, r]), 0.25, 0.06, seed)
 
 
 def _gripper_prims(world: SimWorld, gripper: Any) -> List[_Prim]:
@@ -297,6 +349,7 @@ _KERNELS = {
     'ellipsoid': lambda o, d, prm: _hit_ellipsoid(o, d, prm[0], prm[1]),
     'cylinder': lambda o, d, prm: _hit_cylinder(o, d, prm[0], prm[1]),
     'spheres': lambda o, d, prm: _hit_spheres(o, d, prm[0], prm[1], prm[2]),
+    'capsule': lambda o, d, prm: _hit_capsule(o, d, prm[0], prm[1]),
 }
 
 
