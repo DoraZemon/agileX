@@ -5,6 +5,7 @@ Motion-control entry point: drive the arm without the timed competition loop.
     python3 -m cube_task motion_ctl pick --label cube_red --xyz 0.30 0.05 0.05 ...
     python3 -m cube_task motion_ctl vision --label cube_red     # camera -> detection -> pick
     python3 -m cube_task motion_ctl gripper --width 0.08
+    python3 -m cube_task motion_ctl joints --joint 1 --delta 0.05   # small joint jog
     python3 -m cube_task motion_ctl moveit [--execute]          # RViz / MoveIt bridge
 
 Mode 1, vision target input: ``pick`` takes a base-frame target typed by hand, ``vision``
@@ -34,6 +35,9 @@ from .run_task import (_arm_text, _attach_mujoco, _close_mujoco, _precheck, _say
 
 _LOG = logging.getLogger('cube_task.tools.motion_ctl')
 
+MAX_JOG_RAD = 0.10       # default cap per joint for one `joints` move (about 5.7 deg)
+HARD_JOG_RAD = 0.35      # --max-step above this is refused
+
 
 def _common_parent() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(add_help=False)
@@ -52,7 +56,7 @@ def _common_parent() -> argparse.ArgumentParser:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Return the argument parser with the five sub-commands."""
+    """Return the argument parser with the six sub-commands."""
     parent = _common_parent()
     p = argparse.ArgumentParser(prog='cube_task motion_ctl', description=__doc__.split('\n\n')[0])
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -91,6 +95,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help='really move the arm; without it trajectory goals are refused')
     mv.add_argument('--waypoint-step', type=float, default=0.15, metavar='RAD',
                     help='joint distance between executed waypoints (default 0.15)')
+    jt = sub.add_parser('joints', parents=[parent],
+                        help='small joint move: --joint N --delta RAD, or --to q1..q6')
+    jt.add_argument('--joint', type=int, choices=range(1, 7), metavar='N',
+                    help='joint number 1..6 (with --delta)')
+    jt.add_argument('--delta', type=float, default=None, metavar='RAD',
+                    help='relative move of --joint, rad')
+    jt.add_argument('--to', type=float, nargs=6, default=None, metavar='Q',
+                    help='absolute joint target q1..q6, rad (every joint is capped too)')
+    jt.add_argument('--max-step', type=float, default=MAX_JOG_RAD, metavar='RAD',
+                    help='refuse any joint moving more than this (default %.2f)' % MAX_JOG_RAD)
+    jt.add_argument('--dry-run', action='store_true',
+                    help='read the arm, check the joint limits, never move')
     return p
 
 
@@ -345,6 +361,71 @@ def cmd_gripper(args, s, opts) -> int:
     return EXIT_OK if (g.ok or g.error == 'timeout') else EXIT_FAULT
 
 
+def jog_target(q_now, joint, delta, to, max_step):
+    """Return the 6 joint target of ``joints``; raise Refused when it is unsafe or unclear."""
+    q_now = np.asarray(q_now, dtype=float).reshape(-1)
+    if q_now.shape[0] != 6 or not np.all(np.isfinite(q_now)):
+        raise Refused('current joint angles are unavailable')
+    if not math.isfinite(max_step) or not 0.0 < max_step <= HARD_JOG_RAD:
+        raise Refused('--max-step must be in (0, %.2f] rad' % HARD_JOG_RAD)
+    if (to is None) == (joint is None):
+        raise Refused('give either --joint N --delta RAD or --to q1..q6')
+    if to is not None:
+        q = np.asarray(to, dtype=float)
+    else:
+        if delta is None:
+            raise Refused('--joint needs --delta RAD')
+        q = q_now.copy()
+        q[int(joint) - 1] += float(delta)
+    if q.shape[0] != 6 or not np.all(np.isfinite(q)):
+        raise Refused('the joint target must be 6 finite values')
+    big = np.abs(q - q_now)
+    if float(big.max()) > max_step + 1e-9:
+        raise Refused('joint %d would move %.3f rad, more than --max-step %.3f rad'
+                      % (int(big.argmax()) + 1, float(big.max()), max_step))
+    return q
+
+
+def cmd_joints(args, s, opts) -> int:
+    """Move the joints by a small step (SafeArm checks limits, table height and path)."""
+    code = _connect(s)
+    if code is not None:
+        return code
+    jq = s.arm.get_joints()
+    if jq is None or jq.value is None:
+        _say('FAULT: cannot read the joint angles')
+        return EXIT_FAULT
+    q_now = np.asarray(jq.value, dtype=float).reshape(-1)
+    try:
+        q = jog_target(q_now, args.joint, args.delta, args.to, args.max_step)
+    except Refused as e:
+        _say('REFUSED: %s' % e)
+        return EXIT_REFUSED
+    _say('joints now    (rad): %s' % np.round(q_now, 4).tolist())
+    _say('joints target (rad): %s' % np.round(q, 4).tolist())
+    if args.dry_run:
+        kin = getattr(s.arm, '_kin', None)
+        bad = kin.limit_violations(q) if kin is not None else []
+        if bad:
+            _say('REFUSED: joint limits: %s' % ', '.join(bad))
+            return EXIT_REFUSED
+        _say('dry run: within the joint limits; nothing moved.')
+        return EXIT_OK
+    step = float(np.abs(q - q_now).max())
+    if not _confirm(args, s, 'jog the joints by up to %.3f rad' % step):
+        _say('Not started (no confirmation). Nothing moved.')
+        return EXIT_REFUSED
+    code = _enable(s, opts)
+    if code is not None:
+        return code
+    res = s.arm.move_joints(q)
+    after = s.arm.get_joints()
+    _say('move: ok=%s error=%s' % (res.ok, res.error))
+    if after is not None and after.value is not None:
+        _say('joints after (rad): %s' % np.round(np.asarray(after.value), 4).tolist())
+    return EXIT_OK if res.ok else EXIT_FAULT
+
+
 def cmd_moveit(args, s, opts) -> int:
     """Run the MoveIt bridge until Ctrl-C (see robot/moveit_bridge.py)."""
     try:
@@ -383,7 +464,7 @@ def cmd_moveit(args, s, opts) -> int:
 
 
 _CMDS = {'status': cmd_status, 'pick': cmd_pick, 'vision': cmd_vision, 'gripper': cmd_gripper,
-         'moveit': cmd_moveit}
+         'joints': cmd_joints, 'moveit': cmd_moveit}
 
 
 def main(argv: Optional[List[str]] = None) -> int:

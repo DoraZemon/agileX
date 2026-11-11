@@ -964,11 +964,11 @@ def _no_grasp_reason(world: SimWorld, obj: SimObject, max_width: float) -> str:
     c = obj.center_xy()
     T = top_down_T(c[0] + off * math.cos(a), c[1] + off * math.sin(a), z, a)
     _ok, info = world.check_grasp(T, min(w + 0.02, max_width), 0.0)
+    keys = ('extent', 'taper_deg', 'collided')
+    detail = ', '.join('%s %s' % (k, info[k]) for k in keys if k in info) or 'see check_grasp'
     return ('%s: the sections that fit (narrowest %.3f m, %.0f mm below the top) are not '
             'held (%s)' % (info.get('reason') or 'no_grasp', w, 1000.0 * (obj.top_z() - z),
-                           ', '.join('%s %s' % (k, info[k]) for k in ('extent', 'taper_deg',
-                                                                       'collided')
-                                     if k in info) or 'see check_grasp'))
+                           detail))
 
 
 def official_graspability(max_width: float = GRIPPER_MAX_WIDTH) -> Dict[str, str]:

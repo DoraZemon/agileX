@@ -64,3 +64,32 @@ def test_vision_list_only_in_sim_succeeds():
 def test_gripper_refuses_a_width_above_the_maximum():
     code = motion_ctl.main(['gripper', '--mode', 'sim', '--width', '0.5'])
     assert code == motion_ctl.EXIT_REFUSED
+
+
+def test_jog_target_relative_and_absolute():
+    q0 = np.zeros(6)
+    q = motion_ctl.jog_target(q0, 2, 0.05, None, 0.1)
+    assert np.allclose(q, [0, 0.05, 0, 0, 0, 0])
+    q = motion_ctl.jog_target(q0, None, None, [0.01] * 6, 0.1)
+    assert np.allclose(q, 0.01)
+
+
+@pytest.mark.parametrize('joint,delta,to,step', [
+    (1, 0.5, None, 0.1),             # above --max-step
+    (1, None, None, 0.1),            # --joint without --delta
+    (None, None, None, 0.1),         # nothing given
+    (1, 0.05, [0.0] * 6, 0.1),       # both given
+    (1, 0.05, None, 0.9),            # --max-step above the hard cap
+    (1, float('nan'), None, 0.1),
+])
+def test_jog_target_refuses_unsafe_or_unclear_requests(joint, delta, to, step):
+    with pytest.raises(motion_ctl.Refused):
+        motion_ctl.jog_target(np.zeros(6), joint, delta, to, step)
+
+
+def test_joints_in_sim_moves_a_little_and_refuses_the_limit():
+    assert motion_ctl.main(['joints', '--mode', 'sim', '--joint', '1', '--delta', '0.05',
+                            '-y']) == motion_ctl.EXIT_OK
+    code = motion_ctl.main(['joints', '--mode', 'sim', '--joint', '3', '--delta', '0.05',
+                            '--dry-run'])
+    assert code == motion_ctl.EXIT_REFUSED
