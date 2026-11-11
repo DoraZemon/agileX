@@ -260,21 +260,6 @@ tasks:
     labels: []                 # SITE: fruit / vegetable classes
     class_to_zone: {}
     order: []
-  L3:
-    time_limit_s: 300
-    classifier: knn
-    instructions_file: ''      # one instruction per line
-    labels: []
-    class_to_zone: {}          # not used for routing; L3 names the zone in the instruction
-    label_aliases: {}          # label -> [Chinese / English names], e.g. apple: [苹果]
-    zone_aliases: {}           # zone -> [names], e.g. zone_blue: [蓝色托盘, 蓝盘]
-    left_axis: [0.0, 1.0]      # base XY direction that "left" means in instructions. SITE
-    llm:
-      enabled: false
-      url: http://127.0.0.1:8000/v1/chat/completions   # OpenAI-compatible local server
-      model: ''
-      timeout_s: 20
-      api_key_env: ''          # name of an env var holding a bearer token (never the token)
 
 runner:
   selection: nearest           # nearest | score | isolated

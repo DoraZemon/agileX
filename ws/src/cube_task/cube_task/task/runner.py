@@ -1,8 +1,8 @@
 """
-Competition runner for the L1 / L2 sorting rounds and the L3 instruction round.
+Competition runner for the L1 / L2 sorting rounds.
 
-Flow: self check (a failure refuses a real run) -> operator keys active, L3
-instructions parsed -> refuse when the gripper holds an object -> straight up
+Flow: self check (a failure refuses a real run) -> operator keys active ->
+refuse when the gripper holds an object -> straight up
 when the TCP starts below the transit height -> observe pose + open gripper ->
 eye_in_hand real runs: pick area visible from the observe pose -> operator start
 (Enter typed before the prompt does not count) -> timed loop of observe / select
@@ -32,7 +32,6 @@ from ..core.zones import parse_zones
 from ..perception.grasp import (expected_table_z, GraspPlanner, LONG_ZONE_RATIO, PlacePlanner,
                                 detection_table_z, held_offset_of, max_gripper_width,
                                 table_floor_z, table_z_warning, transit_height)
-from .instruction import COUNT_ALL, parse_instruction
 from .operator import Operator
 from .selection import is_blacklisted, select_target
 from .selfcheck import observe_tcp_pose, self_check
@@ -181,15 +180,14 @@ class TaskRunner:
     Run one timed round. See the module docstring and docs/CONTRACTS.md.
 
     targets: label list overriding tasks.<T>.order (only these labels are
-    picked, first available label first). instructions: L3 strings (default:
-    lines of tasks.L3.instructions_file). mode: 'real' | 'sim' (default from
+    picked, first available label first). mode: 'real' | 'sim' (default from
     robot.backend).
     """
 
     def __init__(self, cfg, task: str, arm, camera, perception, clock, logger,
                  operator: Optional[Operator] = None, dry_run: bool = False,
                  extrinsics=None, targets: Optional[Sequence[str]] = None,
-                 instructions: Optional[Sequence[str]] = None, mode: Optional[str] = None):
+                 mode: Optional[str] = None):
         self.cfg = cfg
         self.task = str(task)
         self.arm = arm
@@ -210,11 +208,7 @@ class TaskRunner:
         if tl is None or not float(tl) > 0:
             raise ValueError('%stime_limit_s must be > 0, got %r' % (t, tl))
         self.time_limit = float(tl)
-        self.instructions = self._load_instructions(instructions)
-        if self.task == 'L3':
-            self.required = len(self.instructions)
-        else:
-            self.required = int(cfg.get(t + 'required', 0) or 0)
+        self.required = int(cfg.get(t + 'required', 0) or 0)
         r = 'runner.'
         self.strategy = str(cfg.get(r + 'selection', 'nearest'))
         self.max_attempts = int(cfg.get(r + 'max_attempts_per_object', 3))
@@ -237,7 +231,6 @@ class TaskRunner:
         self.nominal = {str(k): (float(max(v)), float(min(v)))
                         for k, v in (cfg.get('place.nominal_footprint', {}) or {}).items()
                         if v is not None and len(v) == 2}
-        self.left_axis = np.asarray(cfg.get('tasks.L3.left_axis', [0.0, 1.0]), dtype=float)[:2]
         self.save_images = bool(cfg.get('logging.save_images', True)) and bool(
             cfg.get('logging.image_every_observation', True))
         tcp = cfg.get('robot.tcp_offset', None)
@@ -262,7 +255,6 @@ class TaskRunner:
         #: zone name -> (x, y, footprint, height, length, width, long-axis angle or None) of
         #: the objects released into it
         self._placed: Dict[str, List[Tuple[Any, ...]]] = {}
-        self._specs: Optional[List[Tuple[str, Any]]] = None
         self._fail_streak = 0
         self._last_obs_failure = ''
         self._table_warned = False
@@ -288,10 +280,7 @@ class TaskRunner:
                 self._deadline = t0 + self.time_limit
                 self._event('start', t0=t0, deadline=self._deadline, dry_run=self.dry_run,
                             required=self.required, order=self.order)
-                if self.task == 'L3':
-                    self._loop_instructions(rep)
-                else:
-                    self._loop_sort(rep)
+                self._loop_sort(rep)
                 rep.elapsed = self.clock.now() - t0
                 if rep.stop_reason != 'done' and self._fail_streak > 0 and not self.fault_detail:
                     # The round ended while the camera / perception kept failing.
@@ -328,17 +317,6 @@ class TaskRunner:
         return rep
 
     # --------------------------------------------------------------- prepare
-    def _load_instructions(self, instructions) -> List[str]:
-        if instructions is not None:
-            return [str(s).strip() for s in instructions if str(s).strip()]
-        if self.task != 'L3':
-            return []
-        p = self.cfg.path('tasks.L3.instructions_file')
-        if p is None:
-            return []
-        with open(p, 'r', encoding='utf-8') as f:
-            return [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')]
-
     def _prepare(self, rep: TaskReport) -> bool:
         ok, msgs = self_check(self.cfg, self.task, self.arm, self.camera, self.mode,
                               extrinsics=self._ext_arg, clock=self.clock)
@@ -357,10 +335,8 @@ class TaskRunner:
             return self._refuse(rep, 'config', 'extrinsics: %s' % e)
         if self.ext is None:
             return self._refuse(rep, 'config', 'no extrinsics')
-        if self.task != 'L3' and not self.class_to_zone:
+        if not self.class_to_zone:
             return self._refuse(rep, 'config', 'class_to_zone is empty')
-        if self.task == 'L3' and not self.instructions:
-            return self._refuse(rep, 'config', 'no L3 instructions')
         if self.required <= 0:
             return self._refuse(rep, 'config', 'required must be > 0')
         self.arm.set_abort_event(self.operator.abort_event)
@@ -368,10 +344,6 @@ class TaskRunner:
             self.operator.set_estop_callback(self.arm.emergency_stop)
         if hasattr(self.operator, 'start'):
             self.operator.start()               # p / space / e work from the first motion on
-        if self.task == 'L3':
-            self._parse_instructions()          # no parser / LLM call after the timer starts
-            if self._aborted():
-                return self._refuse(rep, 'aborted', 'aborted before start')
         if not self._healthy():
             return self._refuse(rep, 'fault', 'arm not healthy before start')
         held = self._holding_at_start()
@@ -408,20 +380,6 @@ class TaskRunner:
         if not started:
             return self._refuse(rep, 'aborted', 'aborted before start')
         return True
-
-    def _parse_instructions(self) -> None:
-        """Parse every L3 instruction before the start (rules, or the LLM when enabled)."""
-        from .instruction import InstructionSpec
-        self._specs = []
-        for text in self.instructions:
-            try:
-                spec = parse_instruction(text, self.cfg, self.labels, self.zones)
-            except Exception as e:  # noqa: B902 - a parser bug fails this instruction only
-                _LOG.exception('parse_instruction raised')
-                spec = InstructionSpec(raw=text, ok=False, reason='parse error: %s' % e)
-            self._specs.append((text, spec))
-            (_LOG.info if spec.ok else _LOG.warning)('instruction %r -> %s', text, spec.summary())
-        self._event('instructions_parsed', specs=[sp.summary() for _t, sp in self._specs])
 
     def _fresh_width(self) -> Optional[float]:
         """Return the measured gripper width (m) when fresh, else None."""
@@ -1275,135 +1233,3 @@ class TaskRunner:
         (_LOG.info if frac >= 0.95 else _LOG.warning)('%s', msg)
         self._event('view_coverage', fraction=round(frac, 3), message=msg,
                     views=len(self.views))
-
-    # --------------------------------------------------------------------- L3
-    def apply_selector(self, selector: str, dets: Sequence[Detection]) -> Optional[Detection]:
-        """
-        Pick one detection by an L3 selector (positions in base XY).
-
-        leftmost / rightmost: along tasks.L3.left_axis; front / back: largest /
-        smallest base x; nearest / farthest: distance to the base; largest /
-        smallest: footprint length * width; middle: closest to the mean along
-        the left axis; any: nearest to the base.
-        """
-        dets = [d for d in dets if _has_xy(d)]
-        if not dets:
-            return None
-        axis = self.left_axis
-        n = float(np.linalg.norm(axis))
-        axis = axis / n if n > 1e-9 else np.array([0.0, 1.0])
-
-        def along(d: Detection) -> float:
-            return float(np.dot(np.asarray(_xy(d)), axis))
-
-        def dist(d: Detection) -> float:
-            return math.hypot(*_xy(d))
-
-        def area(d: Detection) -> float:
-            if d.length is None or d.width is None:
-                return math.nan
-            return float(d.length) * float(d.width)
-
-        if selector == 'leftmost':
-            return max(dets, key=along)
-        if selector == 'rightmost':
-            return min(dets, key=along)
-        if selector == 'front':
-            return max(dets, key=lambda d: _xy(d)[0])
-        if selector == 'back':
-            return min(dets, key=lambda d: _xy(d)[0])
-        if selector == 'farthest':
-            return max(dets, key=dist)
-        if selector in ('largest', 'smallest'):
-            sized = [d for d in dets if math.isfinite(area(d))]
-            if not sized:
-                return None
-            return (max if selector == 'largest' else min)(sized, key=area)
-        if selector == 'middle':
-            mean = float(np.mean([along(d) for d in dets]))
-            return min(dets, key=lambda d: abs(along(d) - mean))
-        return min(dets, key=dist)          # 'nearest' and 'any'
-
-    def _loop_instructions(self, rep: TaskReport) -> None:
-        if self._specs is None:
-            self._parse_instructions()
-        for text, spec in self._specs:
-            stop = self._stop_check()
-            if stop is not None:
-                rep.stop_reason = stop
-                return
-            entry = PickResult(ok=False, stage='parse', label=spec.label, zone=spec.zone,
-                               detail={'instruction': text, 'spec': spec.summary(), 'picks': [],
-                                       'fault': False})
-            self._event('instruction', **spec.summary())
-            t_start = self.clock.now()
-            if not spec.ok:
-                entry.error = spec.reason
-                rep.picks.append(entry)
-                continue
-            stop = self._run_instruction(spec, entry, rep)
-            entry.duration = self.clock.now() - t_start
-            rep.picks.append(entry)
-            if entry.ok:
-                rep.placed += 1
-            self._event('instruction_result', instruction=text, ok=entry.ok, stage=entry.stage,
-                        error=entry.error, picks=entry.detail['picks'])
-            if stop is not None:
-                rep.stop_reason = stop
-                return
-        rep.stop_reason = 'done'
-
-    def _run_instruction(self, spec, entry: PickResult, rep: TaskReport) -> Optional[str]:
-        need = None if spec.count == COUNT_ALL else int(spec.count)
-        done = 0
-        empty = 0
-        entry.stage = 'running'
-        while need is None or done < need:
-            stop = self._stop_check()
-            if stop is not None:
-                entry.error = stop
-                entry.detail['fault'] = stop == 'fault'
-                return stop
-            status, result, frame = self._observe()
-            if status in ('fault', 'aborted'):
-                entry.error = status
-                return status
-            if status == 'failed':
-                self._pause_after_failure()
-                continue
-            valid = result.valid_detections()
-            same = [d for d in valid if d.label == spec.label and _has_xy(d)]
-            if spec.selector == 'any':
-                same = [d for d in same
-                        if not is_blacklisted(d, self._blacklisted_xy(), self.match_dist)]
-            target = self.apply_selector(spec.selector, same)
-            self._save_image(frame, result, target)
-            if target is None:
-                if self._retry_from_observe('no matching object in the current view'):
-                    continue
-                empty += 1
-                if need is None and done > 0 and empty >= 2:
-                    break                       # 'all': nothing left
-                if empty >= self.max_empty:
-                    entry.error = 'no_matching_object'
-                    break
-                self.clock.sleep(self.retry_s)
-                continue
-            empty = 0
-            if is_blacklisted(target, self._blacklisted_xy(), self.match_dist):
-                entry.error = 'selected object failed before'
-                break
-            stop, res = self._attempt(target, spec.zone, rep, valid)
-            if res is not None:
-                entry.detail['picks'].append(pick_summary(res))
-                if res.ok or (self.dry_run and res.stage == 'dry_run_done'):
-                    done += 1
-            if stop is not None:
-                entry.error = stop
-                entry.detail['fault'] = stop == 'fault'
-                return stop
-        entry.ok = not self.dry_run and (done >= need if need is not None else done > 0)
-        entry.stage = 'done' if entry.ok else ('dry_run_done' if self.dry_run else 'failed')
-        if entry.ok:
-            entry.error = ''
-        return None

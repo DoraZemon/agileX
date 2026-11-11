@@ -8,11 +8,10 @@ PiPER 六轴机械臂 + 平行夹爪 + 组委会安装的奥比中光“大白�
 |---|---|---|---|
 | L1 | 3 个彩色方块放到指定区域 | 180 s | `color`（HSV 颜色区间） |
 | L2 | 6 个果蔬模型按类别放进容器 | 300 s | `knn`（也可 `onnx` / `onnx+knn`，见 docs/yolo.md） |
-| L3（自愿） | 自然语言指令，如“把最左边的苹果放到蓝色托盘” | 300 s | `knn` |
 
 开始信号之后程序全程自主运行。出故障时停下并报告，不自动重启（每轮只有一次经裁判同意的重启）。
 现场相关的数值（相机话题、外参、TCP、区域位置、类别映射、速度）全部在 YAML 配置里，现场只填参数和
-示教，不改代码。没有真机时，同一套代码在仿真里跑完整的 L1 / L2 / L3，并按真值打分。
+示教，不改代码。没有真机时，同一套代码在仿真里跑完整的 L1 / L2，并按真值打分。
 
 ## 结构
 
@@ -70,7 +69,7 @@ python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-9 --jobs 8
 ```
 
 成功时最后打印 `L1 COMPLETE: placed 3/3 ...`、`ground truth (sim): correct 3, wrong 0` 和
-`exit code 0 (round complete)`。第一次跑 L2 / L3 会先用仿真数据训练一个 KNN 模型（每种相机安装约 12 s，
+`exit code 0 (round complete)`。第一次跑 L2 会先用仿真数据训练一个 KNN 模型（每种相机安装约 12 s，
 缓存在 `~/.cache/cube_task/`）。
 
 MuJoCo 环境和 PiPER 模型准备好后，可以打开窗口或录制视频（[安装步骤](../../../README.md#安装仿真环境)）：
@@ -103,7 +102,7 @@ python3 -m pytest -q -p no:cacheprovider test/
 
 | 工具 | 动臂吗 | 作用 | 文档 |
 |---|---|---|---|
-| `run_task` | 是（先确认） | 比赛入口：跑一轮 L1 / L2 / L3，`--dry-run` 只悬停不闭爪 | 现场流程 |
+| `run_task` | 是（先确认） | 比赛入口：跑一轮 L1 / L2，`--dry-run` 只悬停不闭爪 | 现场流程 |
 | `check_setup` | 否 | 模块、CAN、ROS 话题、配置、可达性检查；`--live` 读臂和相机 | 现场流程 |
 | `scripts/can_up.sh` | 否 | 把 CAN 口设成 UP、1000000 bit/s；`--check` 只检查 | 现场流程 |
 | `scripts/start.sh` | 否（交给 run_task） | 比赛一键启动：CAN 检查 + check_setup + run_task | 现场流程 |
@@ -142,7 +141,7 @@ cube_task/                   包根目录（环境变量 CUBE_TASK_ROOT 可改�
 ├── cube_task/perception/    桌面拟合、分割、分类（color / knn / onnx）、抓取规划
 ├── cube_task/robot/         PiPER（pyAgxArm）、仿真臂、运动学、SafeArm
 ├── cube_task/sim/           仿真世界、RGB-D 渲染、场景、仿真 KNN 训练、mujoco/
-├── cube_task/task/          TaskRunner、抓放技能、自检、L3 指令解析、操作员按键
+├── cube_task/task/          TaskRunner、抓放技能、自检、多观察位、操作员按键
 ├── cube_task/tools/         命令行工具（一个文件一个工具）、yolo/
 └── test/                    pytest
 ```

@@ -165,9 +165,6 @@ def test_unreferenced_zone_warns(fakes):
     cfg.set('zones.veg_bin', {'center': [0.45, -0.30, 0.0]})
     ok, msgs = self_check(cfg, 'L1', mode='sim', extrinsics=FakeExt(default_camera_T()))
     assert ok and _warns(msgs, 'zone veg_bin is not used by any tasks')
-    cfg.set('tasks.L3.zone_aliases', {'veg_bin': ['菜筐']})
-    ok, msgs = self_check(cfg, 'L1', mode='sim', extrinsics=FakeExt(default_camera_T()))
-    assert not _warns(msgs, 'zone veg_bin is not used')
 
 
 def test_expected_z_missing_warns_in_real_mode_only(fakes):

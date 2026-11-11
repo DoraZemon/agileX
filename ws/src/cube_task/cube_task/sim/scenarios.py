@@ -1,5 +1,5 @@
 """
-Seeded competition scenarios (L1 blocks, L2 fruit / vegetables, L3 instructions).
+Seeded competition scenarios (L1 blocks, L2 fruit / vegetables).
 
 Base frame: PiPER base at the origin, z up, table top at z = 0 (the robot
 stands on the table). The pick area is DEFAULT_PICK_POLYGON (same as config
@@ -47,7 +47,7 @@ DEFAULT_TCP_OFFSET = (0.0, 0.0, 0.140, 0.0, 0.0, 0.0)
 GRIPPER_MAX_WIDTH = 0.100            # config robot.gripper.max_width (100 mm stroke)
 
 DEFAULT_PICK_POLYGON = [[0.15, -0.22], [0.45, -0.22], [0.45, 0.22], [0.15, 0.22]]
-TASKS = ('L1', 'L2', 'L3')
+TASKS = ('L1', 'L2')
 MOUNTS = ('eye_to_hand', 'eye_in_hand')
 DIFFICULTIES = ('normal', 'hard')
 MATERIALS = ('official', 'legacy')
@@ -332,23 +332,6 @@ L2_ZONES = (
     ('fruit_bin', (0.19, 0.315, 0.0), (0.14, 0.14), 0.05, (120, 120, 125), 'fruit'),
     ('veg_bin', (0.19, -0.315, 0.0), (0.14, 0.14), 0.05, (95, 115, 95), 'vegetable'),
 )
-L3_ZONES = (
-    ('zone_blue', (0.22, 0.305, 0.0), (0.12, 0.12), 0.015, (170, 110, 60), 'blue'),
-    ('zone_red', (0.09, 0.305, 0.0), (0.12, 0.12), 0.015, (60, 60, 170), 'red'),
-    ('zone_green', (0.22, -0.305, 0.0), (0.12, 0.12), 0.015, (70, 150, 70), 'green'),
-)
-L3_LABEL_ALIASES = {
-    'apple': ['苹果', 'apple'], 'orange': ['橙子', '橘子', 'orange'], 'banana': ['香蕉', 'banana'],
-    'lemon': ['柠檬', 'lemon'], 'grape': ['葡萄', 'grape'], 'carrot': ['胡萝卜', 'carrot'],
-    'eggplant': ['茄子', 'eggplant'], 'cucumber': ['黄瓜', 'cucumber'],
-    'corn': ['玉米', 'corn'], 'tomato': ['西红柿', '番茄', 'tomato'],
-    'green_pepper': ['青椒', 'green pepper'],
-}
-L3_ZONE_ALIASES = {
-    'zone_blue': ['蓝色托盘', '蓝盘', '蓝色区域', 'blue tray'],
-    'zone_red': ['红色托盘', '红盘', '红色区域', 'red tray'],
-    'zone_green': ['绿色托盘', '绿盘', '绿色区域', 'green tray'],
-}
 
 
 # ------------------------------------------------------- official materials
@@ -376,16 +359,6 @@ OFFICIAL_CLASS_TO_ZONE = {'cucumber': 'zone_green', 'pear': 'zone_green',
                           'persimmon': 'zone_red', 'bell_pepper': 'zone_red'}
 OFFICIAL_MASS = {'cucumber': 0.043, 'pear': 0.100, 'banana': 0.050, 'potato': 0.057,
                  'persimmon': 0.100, 'bell_pepper': 0.082}
-OFFICIAL_LABEL_ALIASES = {
-    'cucumber': ['黄瓜', 'cucumber'], 'pear': ['梨子', '梨', 'pear'],
-    'banana': ['香蕉', 'banana'], 'potato': ['土豆', '马铃薯', 'potato'],
-    'persimmon': ['柿子', 'persimmon'], 'bell_pepper': ['红椒', '甜椒', '彩椒', 'bell pepper'],
-}
-OFFICIAL_ZONE_ALIASES = {
-    'zone_green': ['绿色区域', '绿色卡片', '绿区', 'green zone'],
-    'zone_yellow': ['黄色区域', '黄色卡片', '黄区', 'yellow zone'],
-    'zone_red': ['红色区域', '红色卡片', '红区', 'red zone'],
-}
 
 
 def _arc_capsules(length: float, r: float, radius: float, n: int) -> List[Dict[str, Any]]:
@@ -729,15 +702,12 @@ def _check_graspable(objects: List[SimObject]) -> List[SimObject]:
 
 
 def _draw_labels(task: str, hard: bool, rng: np.random.Generator) -> List[str]:
-    """Draw the 6 object labels of an L2 / L3 scene in a random order."""
-    if task == 'L2' and hard:
+    """Draw the 6 object labels of an L2 scene in a random order."""
+    if hard:
         chosen = [str(v) for v in rng.choice(sorted(CATALOG), 6, replace=True)]
-    elif task == 'L2':
+    else:
         chosen = ([str(v) for v in rng.choice(FRUITS, 3, replace=False)]
                   + [str(v) for v in rng.choice(VEGETABLES, 3, replace=False)])
-    else:
-        others = [k for k in sorted(CATALOG) if k != 'apple']
-        chosen = ['apple', 'apple'] + [str(v) for v in rng.choice(others, 4, replace=False)]
     return [chosen[i] for i in rng.permutation(len(chosen))]
 
 
@@ -1154,7 +1124,6 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
     info: Dict[str, Any] = {'task': task, 'seed': int(seed), 'mount': mount,
                             'difficulty': difficulty, 'materials': 'official',
                             'layout': layout, 'gripper_width': gripper_width}
-    dup = None
     if task == 'L1':
         objects = _retry_layout(lambda g: _official_l1_objects(rng, polygon, hard, width,
                                                                visible, g), OFFICIAL_ATTEMPTS)
@@ -1164,22 +1133,13 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
         categories: Dict[str, str] = {}
         info['time_limit_s'] = 180.0
     else:
-        if task == 'L2':
-            chosen = [str(v) for v in rng.permutation(OFFICIAL_LABELS)]
-        else:
-            ok = [k for k in OFFICIAL_LABELS
-                  if k != 'cucumber' and class_grasp(k, width)[0] is not None]
-            dup = str(rng.choice(ok)) if ok else 'banana'
-            rest = [k for k in OFFICIAL_LABELS if k != dup]
-            chosen = [dup, dup] + [str(v) for v in rng.choice(rest, 4, replace=False)]
-            chosen = [chosen[i] for i in rng.permutation(len(chosen))]
+        chosen = [str(v) for v in rng.permutation(OFFICIAL_LABELS)]
         gap = OFFICIAL_GAP[difficulty]
         objects = _retry_layout(lambda g: _official_models(chosen, rng, polygon, gap, width,
                                                            visible, g), OFFICIAL_ATTEMPTS)
         labels = [k for k in OFFICIAL_LABELS if k in chosen]
         categories = {k: CATEGORIES[k] for k in labels}
-        class_to_zone = ({k: OFFICIAL_CLASS_TO_ZONE[k] for k in labels} if task == 'L2'
-                         else {})
+        class_to_zone = {k: OFFICIAL_CLASS_TO_ZONE[k] for k in labels}
         info['time_limit_s'] = 300.0
     world = SimWorld(table_z=0.0, objects=objects, zones=zones, seed=int(seed),
                      min_zone_fraction=OFFICIAL_MIN_ZONE_FRACTION,
@@ -1194,11 +1154,6 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
                 ungraspable={k: v for k, v in sorted(why.items()) if v})
     info['graspable_required'] = sum(1 for o in objects
                                      if o.label in class_to_zone and not why[o.label])
-    if task == 'L3':
-        info['required'] = 5
-        info.update(_official_l3_instructions(world, rng, str(dup), why))
-        info['graspable_required'] = sum(1 for sp in info['instruction_specs']
-                                         if not why[sp['label']])
     if mount == 'eye_to_hand':
         info['T_base_camera'] = official_T_base_camera(layout)
         info['observe_joints'] = [float(v) for v in EYE_TO_HAND_PARK_JOINTS]
@@ -1209,42 +1164,6 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
         info['observe_joints'] = list(q)
         info['observe_views'] = [list(v) for v, _T in official_wrist_views(layout)]
     return world, info
-
-
-def _official_l3_instructions(world: SimWorld, rng: np.random.Generator, dup: str,
-                              why: Dict[str, str]) -> Dict[str, Any]:
-    """
-    Return referee-style instructions for an official L3 world and the expected parse.
-
-    The duplicated class dup gets leftmost / rightmost (left = base +y), then
-    three other objects (graspable classes first) 'any' / 'nearest' / 'any';
-    the zones are a seeded permutation of the cards.
-    """
-    zh_zone = {'zone_green': '绿色区域', 'zone_yellow': '黄色区域', 'zone_red': '红色区域'}
-    zones = [str(z) for z in rng.permutation(OFFICIAL_ZONE_NAMES)]
-    pair = sorted((o for o in world.objects if o.label == dup),
-                  key=lambda o: float(o.center_xy()[1]))
-    zh = OFFICIAL_LABEL_ALIASES[dup][0]
-    specs = [
-        dict(text='把最左边的%s放到%s' % (zh, zh_zone[zones[0]]), label=dup,
-             selector='leftmost', zone=zones[0], count=1, object=pair[-1].name),
-        dict(text='把最右边的%s放到%s' % (zh, zh_zone[zones[1]]), label=dup,
-             selector='rightmost', zone=zones[1], count=1, object=pair[0].name),
-    ]
-    others = sorted((o for o in world.objects if o.label != dup),
-                    key=lambda o: (bool(why.get(o.label)), o.name))
-    for k, obj in enumerate(others[:3]):
-        zone = zones[(k + 2) % 3]
-        zh = OFFICIAL_LABEL_ALIASES[obj.label][0]
-        if k == 1:
-            text, sel = '把离机器人最近的%s放到%s' % (zh, zh_zone[zone]), 'nearest'
-        else:
-            text, sel = '把%s放到%s' % (zh, zh_zone[zone]), 'any'
-        specs.append(dict(text=text, label=obj.label, selector=sel, zone=zone, count=1,
-                          object=obj.name))
-    return {'instructions': [s['text'] for s in specs], 'instruction_specs': specs,
-            'label_aliases': {k: list(v) for k, v in OFFICIAL_LABEL_ALIASES.items()},
-            'zone_aliases': {k: list(v) for k, v in OFFICIAL_ZONE_ALIASES.items()}}
 
 
 @functools.lru_cache(maxsize=16)
@@ -1339,8 +1258,7 @@ def make_scenario(task: str, seed: int, mount: str = 'eye_to_hand',
     (pink / orange / blue / purple) and two touching cubes. L2: the six
     plastic models (cucumber, pear, banana, potato, persimmon, bell_pepper,
     'compound' shapes) for the cards (OFFICIAL_CLASS_TO_ZONE); 'hard' uses
-    smaller gaps. L3: L2 objects with one class twice and referee-style
-    instructions. layout: table layout 'A' or 'B' (LAYOUTS: card positions,
+    smaller gaps. layout: table layout 'A' or 'B' (LAYOUTS: card positions,
     pick polygon, cameras). gripper_width: robot.gripper.max_width (m) the
     scene is checked against (None = GRIPPER_MAX_WIDTH, the standard
     gripper); objects of a class that no top-down grasp fits are still
@@ -1350,15 +1268,14 @@ def make_scenario(task: str, seed: int, mount: str = 'eye_to_hand',
     and gripper_width only go to info / the overlay): L1 3 colored cubes,
     3 mats ('hard': two touching cubes and a yellow distractor); L2 6 fruit /
     vegetable models, 2 walled bins ('hard': smaller gaps, every catalog
-    label); L3 L2-like objects with 2 apples, 3 trays.
+    label).
 
     info keys: task, seed, mount, difficulty, materials, layout,
     gripper_width, labels, class_to_zone, categories, zones (name -> core
     Zone), pick_polygon, intrinsics (CameraIntrinsics), T_base_camera
     (eye_to_hand) or T_flange_camera and T_base_camera_observe
     (eye_in_hand), observe_joints, objects, required, time_limit_s, plus for
-    L3 instructions / instruction_specs / label_aliases / zone_aliases, and
-    for official scenes ungraspable and graspable_required (targets some
+    official scenes ungraspable and graspable_required (targets some
     top-down grasp fits). Deterministic for a given argument set.
     """
     if task not in TASKS:
@@ -1399,7 +1316,7 @@ def _legacy_scenario(task: str, seed: int, mount: str, difficulty: str
         objects = _retry_layout(lambda g: _l1_objects(rng, polygon, hard, g))
         info['time_limit_s'] = 180.0
     else:
-        zones = _make_zones(L2_ZONES if task == 'L2' else L3_ZONES)
+        zones = _make_zones(L2_ZONES)
         gap = 0.018 if hard else 0.025
         for _draw in range(5):
             chosen = _draw_labels(task, hard, rng)
@@ -1413,11 +1330,8 @@ def _legacy_scenario(task: str, seed: int, mount: str, difficulty: str
         used = sorted(CATALOG) if (hard and task == 'L2') else sorted(set(chosen))
         labels = used
         categories = {k: CATALOG[k][0] for k in used}
-        if task == 'L2':
-            class_to_zone = {k: ('fruit_bin' if CATALOG[k][0] == 'fruit' else 'veg_bin')
-                             for k in used}
-        else:
-            class_to_zone = {}
+        class_to_zone = {k: ('fruit_bin' if CATALOG[k][0] == 'fruit' else 'veg_bin')
+                         for k in used}
         info['time_limit_s'] = 300.0
     world = SimWorld(table_z=0.0, objects=objects, zones=zones, seed=int(seed))
     info.update(labels=labels, class_to_zone=class_to_zone, categories=categories,
@@ -1426,9 +1340,6 @@ def _legacy_scenario(task: str, seed: int, mount: str, difficulty: str
                 intrinsics=default_intrinsics(),
                 objects=[{'name': o.name, 'label': o.label} for o in objects],
                 required=sum(1 for o in objects if o.label in class_to_zone))
-    if task == 'L3':
-        info['required'] = 5
-        info.update(_l3_instructions(world, rng))
     if mount == 'eye_to_hand':
         info['T_base_camera'] = look_at(EYE_TO_HAND_CAMERA_POS, EYE_TO_HAND_LOOK_AT)
         info['observe_joints'] = [float(v) for v in EYE_TO_HAND_PARK_JOINTS]
@@ -1438,43 +1349,6 @@ def _legacy_scenario(task: str, seed: int, mount: str, difficulty: str
         info['T_base_camera_observe'] = np.array(T_obs)
         info['observe_joints'] = list(q)
     return world, info
-
-
-def _l3_instructions(world: SimWorld, rng: np.random.Generator) -> Dict[str, Any]:
-    """
-    Return referee-style instructions for an L3 world and the expected parse.
-
-    'Left' is base +y (config tasks.L3.left_axis default [0, 1]); 'nearest'
-    is the smallest horizontal distance to the robot base.
-    """
-    zh_zone = {'zone_blue': '蓝色托盘', 'zone_red': '红色托盘', 'zone_green': '绿色托盘'}
-    apples = sorted((o for o in world.objects if o.label == 'apple'),
-                    key=lambda o: float(o.center_xy()[1]))
-    others = [o for o in world.objects if o.label != 'apple']
-    specs = [
-        dict(text='把最左边的苹果放到蓝色托盘', label='apple', selector='leftmost',
-             zone='zone_blue', count=1, object=apples[-1].name),
-        dict(text='把最右边的苹果放到红色托盘', label='apple', selector='rightmost',
-             zone='zone_red', count=1, object=apples[0].name),
-    ]
-    zones_cycle = ['zone_green', 'zone_blue', 'zone_red']
-    for k, obj in enumerate(others[:3]):
-        zh = L3_LABEL_ALIASES[obj.label][0]
-        same = [o for o in others if o.label == obj.label]
-        zone = zones_cycle[k % 3]
-        if len(same) == 1 and k == 1:
-            text, sel = '把离机器人最近的%s放到%s' % (zh, zh_zone[zone]), 'nearest'
-        elif len(same) == 1:
-            text, sel = '把%s放到%s' % (zh, zh_zone[zone]), 'any'
-        else:
-            target = min(same, key=lambda o: float(np.hypot(*o.center_xy())))
-            text, sel = '把离机器人最近的%s放到%s' % (zh, zh_zone[zone]), 'nearest'
-            obj = target
-        specs.append(dict(text=text, label=obj.label, selector=sel, zone=zone, count=1,
-                          object=obj.name))
-    return {'instructions': [s['text'] for s in specs], 'instruction_specs': specs,
-            'label_aliases': {k: list(v) for k, v in L3_LABEL_ALIASES.items()},
-            'zone_aliases': {k: list(v) for k, v in L3_ZONE_ALIASES.items()}}
 
 
 def _axis_angle(axis: np.ndarray, angle: float) -> np.ndarray:
@@ -1539,9 +1413,6 @@ def scenario_config_overlay(info: Dict[str, Any],
                        'label': str(z.label)}
     task_cfg: Dict[str, Any] = {'labels': list(info['labels']),
                                 'class_to_zone': dict(info['class_to_zone'])}
-    if task == 'L3':
-        task_cfg['label_aliases'] = info.get('label_aliases', {})
-        task_cfg['zone_aliases'] = info.get('zone_aliases', {})
     sim = {'intrinsics': info['intrinsics'].to_dict(), 'seed': int(info['seed']),
            'extrinsics_error': [float(extrinsics_error[0]), float(extrinsics_error[1])]}
     sim.update(sim_cam)

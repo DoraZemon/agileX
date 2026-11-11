@@ -850,7 +850,7 @@ def check_tasks(cfg, task: Optional[str] = None) -> List[str]:
     """Return the tasks to self-check: task when given, else L1 / L2 with a class_to_zone."""
     if task:
         return [task]
-    out = [t for t in TASKS if t != 'L3' and cfg.get('tasks.%s.class_to_zone' % t, None)]
+    out = [t for t in TASKS if cfg.get('tasks.%s.class_to_zone' % t, None)]
     return out or ['L1']
 
 

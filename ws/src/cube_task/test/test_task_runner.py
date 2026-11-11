@@ -261,35 +261,6 @@ def test_eye_in_hand_uses_flange_pose_at_capture():
     assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 3
 
 
-def test_l3_instructions():
-    rig = Rig('L3')
-    rig.world.add(make_det('apple', 0.25, -0.10, size=0.05, length=0.055))
-    rig.world.add(make_det('apple', 0.30, 0.12, size=0.05, length=0.055))
-    rig.world.add(make_det('banana', 0.35, -0.05, size=0.035, length=0.15))
-    rig.world.add(make_det('banana', 0.40, 0.05, size=0.035, length=0.15))
-    rig.world.add(make_det('carrot', 0.22, 0.05, size=0.03, length=0.14))
-    rep = rig.runner(instructions=['把最左边的苹果放到蓝色托盘', '把所有香蕉放进黄色的盒子',
-                                   '把西瓜放到红色托盘', '把胡萝卜放到绿色区域']).run()
-    assert [p.ok for p in rep.picks] == [True, True, False, True]
-    assert rep.placed == 3 and rep.required == 4 and rep.stop_reason == 'done'
-    assert rig.world.placed['zone_blue'] == ['apple']
-    assert rig.world.placed['zone_yellow'] == ['banana', 'banana']
-    left_apple = [d for d in rig.world.objects if d.label == 'apple']
-    assert len(left_apple) == 1 and left_apple[0].center_base[1] == pytest.approx(-0.10)
-    assert 'watermelon' in rep.picks[2].error
-
-
-def test_l3_time_limit_and_missing_object():
-    rig = Rig('L3')
-    rig.world.add(make_det('apple', 0.25, -0.10, size=0.05, length=0.055))
-    rig.cfg.set('tasks.L3.time_limit_s', 25)
-    rep = rig.runner(instructions=['把橙子放到红色托盘', '把苹果放到红色托盘',
-                                   '把苹果放到蓝色托盘']).run()
-    assert rep.picks[0].error == 'no_matching_object'
-    assert rep.stop_reason == 'timeout'
-    assert rep.placed <= 1 and rep.elapsed <= 25
-
-
 def test_start_on_enter_false_does_not_wait():
     import io
     rig = Rig('L1')

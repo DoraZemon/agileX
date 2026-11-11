@@ -51,7 +51,7 @@ RELEASE_FULL_OPEN_TOL = 0.002
 OPENING_SHORT = 'opening stopped'
 #: AGX gripper force range (N); a configured force above it is clamped.
 MAX_GRIPPER_FORCE = 3.0
-#: default tasks.<T>.gripper_force (N): light foam cubes (L1), 40-100 g models (L2, L3).
+#: default tasks.<T>.gripper_force (N): light foam cubes (L1), 40-100 g models (L2).
 TASK_GRIPPER_FORCE = {'L1': 1.5, 'L2': 2.5}
 #: stages whose target is a free-space pose (may lean up to max_tilt_free_deg).
 FREE_STAGES = ('pre', 'lift', 'transit', 'retreat', 'recover_retreat', 'recover_up',
@@ -70,17 +70,14 @@ def gripper_force_for(cfg, task: Optional[str] = None) -> Optional[float]:
     """
     Return the grasp force (N) for task, clamped to MAX_GRIPPER_FORCE.
 
-    tasks.<task>.gripper_force, else TASK_GRIPPER_FORCE (L3 uses the L2 value,
-    tasks.L2.gripper_force, as its objects are the L2 models), else
+    tasks.<task>.gripper_force, else TASK_GRIPPER_FORCE, else
     robot.gripper.force. None when none of them is a number >= 0.
     """
     f = None
     if task:
         f = _force_value(cfg.get('tasks.%s.gripper_force' % task, None))
-        if f is None and task == 'L3':
-            f = _force_value(cfg.get('tasks.L2.gripper_force', None))
         if f is None:
-            f = _force_value(TASK_GRIPPER_FORCE.get('L2' if task == 'L3' else task))
+            f = _force_value(TASK_GRIPPER_FORCE.get(task))
     if f is None:
         f = _force_value(cfg.get('robot.gripper.force', None))
     if f is None:

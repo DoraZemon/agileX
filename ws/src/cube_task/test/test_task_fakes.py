@@ -37,7 +37,6 @@ def make_cfg(task='L1', **overrides):
     cfg.set('tasks.L2.class_to_zone', {'apple': 'zone_red', 'orange': 'zone_red',
                                        'banana': 'zone_yellow', 'corn': 'zone_yellow',
                                        'carrot': 'zone_green', 'eggplant': 'zone_blue'})
-    cfg.set('tasks.L3.labels', ['apple', 'banana', 'orange', 'carrot'])
     for k, v in overrides.items():
         cfg.set(k.replace('__', '.'), v)
     return cfg

@@ -553,7 +553,7 @@ def sim_relayout(world, task: str, seed: int, mount: str = 'eye_to_hand') -> int
     Keeps the zones. Returns the number of objects now on the table.
     """
     from ..sim.scenarios import make_scenario
-    w2, _info = make_scenario(task if task in ('L1', 'L2', 'L3') else 'L1', int(seed),
+    w2, _info = make_scenario(task if task in ('L1', 'L2') else 'L1', int(seed),
                               mount=mount)
     world.objects = list(w2.objects)
     world.held = None

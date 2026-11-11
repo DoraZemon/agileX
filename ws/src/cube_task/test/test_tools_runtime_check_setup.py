@@ -141,7 +141,7 @@ def test_default_config_reports_fails_without_crashing(monkeypatch, capsys):
     assert check_setup.main() == 1
     out = capsys.readouterr().out
     for needle in ('no zones configured', 'no extrinsics', 'class_to_zone is empty',
-                   'can0 does not exist', 'L3 (optional) is not configured'):
+                   'can0 does not exist'):
         assert needle in out, needle
     lines = out.splitlines()
     for i, ln in enumerate(lines):

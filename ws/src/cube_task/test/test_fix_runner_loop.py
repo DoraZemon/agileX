@@ -138,14 +138,6 @@ def test_perception_errors_are_retried_not_counted_as_empty():
     assert len(failed) == 7 and failed[0]['reason'].startswith('perception error: boom 2')
 
 
-def test_l3_observation_failures_are_retried():
-    rig = Rig('L3')
-    rig.world.add(make_det('apple', 0.25, -0.10, size=0.05, length=0.055))
-    rig.camera.none_frames = 6
-    rep = rig.runner(instructions=['把苹果放到蓝色托盘']).run()
-    assert rep.ok and rep.placed == 1, [p.error for p in rep.picks]
-
-
 def test_empty_ok_observations_still_end_the_round():
     rig = Rig('L1')
     rig.world.add(make_det('unknown', 0.25, -0.10))

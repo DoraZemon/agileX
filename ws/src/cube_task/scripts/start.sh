@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # One-click competition start on the real robot.
 #
-# Usage: bash scripts/start.sh <L1|L2|L3> [--force] [run_task options...]
+# Usage: bash scripts/start.sh <L1|L2> [--force] [run_task options...]
 #   e.g. bash scripts/start.sh L1 --targets red,blue
 #        bash scripts/start.sh L2 --dry-run --speed 20
-#        bash scripts/start.sh L3 --instructions-file round1.txt
 #
 # Steps: cd to the workspace, source ROS 2 Humble and ws/install/setup.bash (if
 # present), check CAN (scripts/can_up.sh --check), run check_setup for the task,
@@ -23,9 +22,9 @@ usage() {
 
 TASK="${1:-}"
 case "$TASK" in
-    L1|L2|L3) shift ;;
+    L1|L2) shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "start.sh: first argument must be L1, L2 or L3" >&2; usage >&2; exit 2 ;;
+    *) echo "start.sh: first argument must be L1 or L2" >&2; usage >&2; exit 2 ;;
 esac
 
 FORCE=0

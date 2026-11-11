@@ -141,7 +141,7 @@ def test_piper_geometry_and_meta():
     assert os.path.dirname(mw.xml_path) == os.path.realpath(ASSETS)
 
 
-COMBOS = ([(t, mo, d, 1) for t in ('L1', 'L2', 'L3') for mo in ('eye_to_hand', 'eye_in_hand')
+COMBOS = ([(t, mo, d, 1) for t in ('L1', 'L2') for mo in ('eye_to_hand', 'eye_in_hand')
            for d in ('normal', 'hard')]
           + [('L1', 'eye_to_hand', 'normal', 2), ('L2', 'eye_to_hand', 'normal', 2),
              ('L2', 'eye_to_hand', 'hard', 3)])
@@ -305,7 +305,7 @@ def test_projection_with_optical_intrinsics_hits_object(task, mount):
             assert geom[v, um] not in rec.geom_ids
 
 
-@pytest.mark.parametrize('task', ['L1', 'L2', 'L3'])
+@pytest.mark.parametrize('task', ['L1', 'L2'])
 def test_zones_render_and_collide_as_built(task):
     mw = _build(task, cached=True)
     world, _info = make_scenario(task, 1)

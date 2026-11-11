@@ -105,38 +105,17 @@ def parse_seeds(text: str) -> List[int]:
 
 
 # ------------------------------------------------------------- ground truth
-def l3_expected(info: Dict[str, Any]) -> Dict[str, str]:
-    """Return object name -> zone for the scenario's L3 instructions."""
-    return {str(s['object']): str(s['zone']) for s in (info.get('instruction_specs') or [])}
-
-
 def ground_truth(world, info: Dict[str, Any], task: str,
                  targets: Optional[Sequence[str]] = None) -> Dict[str, int]:
     """
     Score the simulated world: dict(correct, wrong, remaining).
 
-    L1 / L2: world.score(class_to_zone), restricted to targets when given.
-    L3: by object name, from info['instruction_specs'] (the expected zone of
-    every object an instruction names). wrong counts any object resting in a
-    zone other than its expected one, including non-targets.
+    world.score(class_to_zone), restricted to targets when given.
     """
-    if task != 'L3':
-        c2z = dict(info.get('class_to_zone') or {})
-        if targets:
-            c2z = {k: v for k, v in c2z.items() if k in set(targets)}
-        return world.score(c2z)
-    expected = l3_expected(info)
-    res = {'correct': 0, 'wrong': 0, 'remaining': 0}
-    for obj in world.objects:
-        z = world.zone_of(obj)
-        if z is None:
-            if obj.name in expected:
-                res['remaining'] += 1
-        elif expected.get(obj.name) == z.name:
-            res['correct'] += 1
-        else:
-            res['wrong'] += 1
-    return res
+    c2z = dict(info.get('class_to_zone') or {})
+    if targets:
+        c2z = {k: v for k, v in c2z.items() if k in set(targets)}
+    return world.score(c2z)
 
 
 def is_success(run: Dict[str, Any]) -> bool:
@@ -292,9 +271,7 @@ def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
         cfg, world, info = load_cfg_for(args, task)
         with open_session(args, task, logger=bool(spec.get('save_logs')),
                           cfg_world_info=(cfg, world, info)) as s:
-            instructions = list(info.get('instructions') or []) if task == 'L3' else None
-            required = len(instructions) if task == 'L3' else int(
-                s.cfg.get('tasks.%s.required' % task, 0) or 0)
+            required = int(s.cfg.get('tasks.%s.required' % task, 0) or 0)
             point = fault_point(spec, required)
             camera, arm = s.camera, s.arm
             if spec['fault'] == 'grasp_miss':
@@ -313,7 +290,7 @@ def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
                 extras = RunExtras(world)
                 extras.attach(s)            # wraps s.logger: runner events -> monitor
             runner = TaskRunner(s.cfg, task, arm, camera, s.perception, s.clock, s.logger,
-                                instructions=instructions, mode='sim')
+                                mode='sim')
             rep = runner.run()
             if extras is not None:
                 phys = extras.finish(info, rep.stop_reason, logger=log)
@@ -466,7 +443,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='sim_bench', description='Run many simulated rounds and score them by ground '
         'truth (success rate, time, wrong placements).')
-    p.add_argument('--tasks', default='L1,L2', help='comma list of L1, L2, L3 (default L1,L2)')
+    p.add_argument('--tasks', default='L1,L2', help='comma list of L1, L2 (default L1,L2)')
     p.add_argument('--seeds', default='0-9', help="seeds, e.g. '0-19' or '0,3,5-7'")
     p.add_argument('--mounts', default='eye_to_hand,eye_in_hand',
                    help='comma list of eye_to_hand, eye_in_hand')

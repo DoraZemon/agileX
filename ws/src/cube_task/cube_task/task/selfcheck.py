@@ -16,7 +16,7 @@ import numpy as np
 from ..core.transforms import inv_T, is_rotation, pose6_to_T, top_down_T
 from ..core.zones import parse_zones
 
-TASKS = ('L1', 'L2', 'L3')
+TASKS = ('L1', 'L2')
 #: typical TCP-to-object-bottom distance (m) used to check release poses.
 CHECK_HELD_OFFSET = 0.03
 #: minimum fraction of valid depth pixels inside the projected pick area.
@@ -83,8 +83,6 @@ def _check_task_config(cfg, task: str, rep: _Report, zones) -> None:
         labels = []
     else:
         rep.good('%s labels: %s' % (task, ', '.join(str(x) for x in labels)))
-    if task == 'L3':
-        return
     c2z = cfg.get('tasks.%s.class_to_zone' % task, None) or {}
     if not isinstance(c2z, dict) or not c2z:
         rep.fail('tasks.%s.class_to_zone is empty: nothing would be picked' % task)
@@ -161,15 +159,12 @@ def _polygons_overlap(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]]
 
 
 def _referenced_zones(cfg) -> set:
-    """Zone names used by tasks.*.class_to_zone and tasks.L3.zone_aliases."""
+    """Zone names used by tasks.*.class_to_zone."""
     used = set()
     for task in TASKS:
         c2z = cfg.get('tasks.%s.class_to_zone' % task, None) or {}
         if isinstance(c2z, dict):
             used.update(str(v) for v in c2z.values())
-    aliases = cfg.get('tasks.L3.zone_aliases', None) or {}
-    if isinstance(aliases, dict):
-        used.update(str(k) for k in aliases)
     return used
 
 
@@ -203,7 +198,7 @@ def _check_zones(cfg, rep: _Report, zones) -> None:
     used = _referenced_zones(cfg)
     for name in sorted(zones):
         if name not in used:
-            rep.warn('zone %s is not used by any tasks.*.class_to_zone (or tasks.L3.zone_aliases) '
+            rep.warn('zone %s is not used by any tasks.*.class_to_zone '
                      'but perception still ignores objects in it: remove it from poses.yaml if '
                      'it is left over from an earlier layout' % name)
     if zones:

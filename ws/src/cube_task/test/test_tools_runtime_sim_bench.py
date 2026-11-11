@@ -13,7 +13,7 @@ def test_parse_seeds_and_lists():
     for bad in ('', '3-1', '-2', 'a', '1-'):
         with pytest.raises(ValueError):
             sim_bench.parse_seeds(bad)
-    assert sim_bench.parse_list('L1,L3,L1', sim_bench.TASKS, '--tasks') == ['L1', 'L3']
+    assert sim_bench.parse_list('L1,L2,L1', sim_bench.TASKS, '--tasks') == ['L1', 'L2']
     with pytest.raises(ValueError, match='unknown L4'):
         sim_bench.parse_list('L4', sim_bench.TASKS, '--tasks')
 

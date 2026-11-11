@@ -1,13 +1,11 @@
 """
-Competition entry point: run one L1 / L2 / L3 round.
+Competition entry point: run one L1 / L2 round.
 
 Examples::
 
     run_task --task L1                              # real robot, waits for Enter
     run_task --task L1 --targets red,blue           # referee-specified labels / order
     run_task --task L2 --dry-run --speed 20         # hover above grasp / release poses
-    run_task --task L3 --instructions-file round1.txt
-    run_task --task L3 --instruction '把苹果放到蓝色托盘' --instruction '...'
     run_task --task L2 --mode sim --seed 3 --mount eye_in_hand
     run_task --task L1 --mode mujoco --seed 0 --video ~/vision_runs/mujoco/L1_s0.mp4
 
@@ -15,9 +13,7 @@ Examples::
 scripts/start.sh runs the pre-flight checks first.)
 
 Flow: config -> arm, camera, perception, run log and operator keys
-(tools.common.open_session) -> connect the arm (read-only) -> summary (L3:
-the parse of each instruction; with tasks.L3.llm.enabled the rule and the LLM
-parse, and which one the run uses) -> real
+(tools.common.open_session) -> connect the arm (read-only) -> summary -> real
 mode: full self check (a FAIL refuses, nothing enabled), then ask before the
 first motion (--yes skips) -> enable -> TaskRunner.run() -> report table (sim:
 also the ground truth). During the run: p / space =
@@ -78,7 +74,7 @@ def _say(text: str = '') -> None:
 # ---------------------------------------------------------------- arguments
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog='run_task', description='Run one competition round (L1 / L2 / L3).',
+        prog='run_task', description='Run one competition round (L1 / L2).',
         epilog='Exit codes: 0 complete, 1 incomplete, 2 refused before motion, 3 fault, '
         '130 Ctrl-C.')
     add_common_args(p, task_required=True, mujoco=True)
@@ -87,10 +83,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--targets', default='', metavar='LABELS',
                    help='L1 / L2: referee-specified labels in order, e.g. red,blue '
                    '(only these are picked)')
-    p.add_argument('--instruction', action='append', default=[], metavar='TEXT',
-                   help='L3 instruction (repeatable, run in the given order)')
-    p.add_argument('--instructions-file', default='', metavar='FILE',
-                   help='L3: one instruction per line (default tasks.L3.instructions_file)')
     p.add_argument('--no-wait', action='store_true',
                    help='start the timed run without waiting for Enter (sim never waits)')
     p.add_argument('--speed', type=int, default=None, metavar='PCT',
@@ -108,22 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def read_instructions(path: Path) -> List[str]:
-    """Return the non-empty, non-comment lines of an instruction file (UTF-8)."""
-    try:
-        with open(path, 'r', encoding='utf-8-sig') as f:
-            return [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')]
-    except OSError as e:
-        raise Refused('cannot read the instructions file %s: %s' % (path, e))
-
-
 def parse_targets(text: str, cfg, task: str) -> List[str]:
     """Return the referee target labels (config spelling); raise Refused when invalid."""
     items = [t for t in re.split(r'[,，;；\s]+', str(text or '').strip()) if t]
     if not items:
         return []
-    if task == 'L3':
-        raise Refused('--targets is for L1 / L2; L3 uses --instruction')
     c2z = dict(cfg.get('tasks.%s.class_to_zone' % task, {}) or {})
     labels = [str(v) for v in (cfg.get('tasks.%s.labels' % task, []) or [])]
     known = {lab.lower(): lab for lab in labels + [str(k) for k in c2z]}
@@ -160,35 +141,6 @@ def resolve_speed(args: argparse.Namespace, cfg) -> SimpleNamespace:
     return SimpleNamespace(speed=int(args.speed), configured=conf_i)
 
 
-def resolve_instructions(args: argparse.Namespace, cfg, info: Optional[dict]):
-    """Return (instructions or None, source text) for the task; raise Refused."""
-    if args.task != 'L3':
-        if args.instruction or args.instructions_file:
-            raise Refused('--instruction / --instructions-file are for --task L3')
-        return None, ''
-    lines: List[str] = []
-    sources = []
-    if args.instructions_file:
-        p = Path(args.instructions_file).expanduser()
-        lines += read_instructions(p)
-        sources.append(str(p))
-    if args.instruction:
-        lines += [s.strip() for s in args.instruction if s and s.strip()]
-        sources.append('command line')
-    if not sources:
-        p = cfg.path('tasks.L3.instructions_file')
-        if p is not None:
-            lines = read_instructions(p)
-            sources.append(str(p))
-        elif args.mode in ('sim', 'mujoco') and (info or {}).get('instructions'):
-            lines = [str(s) for s in info['instructions']]
-            sources.append('sim scenario')
-    if not lines:
-        raise Refused('no L3 instructions: pass --instruction TEXT or --instructions-file FILE '
-                      '(or set tasks.L3.instructions_file)')
-    return lines, ' + '.join(sources)
-
-
 def prepare_options(args: argparse.Namespace, cfg, info: Optional[dict]) -> SimpleNamespace:
     """Validate the run options and apply them to cfg (raises Refused)."""
     if args.mode != 'mujoco' and (args.video or args.viewer):
@@ -205,9 +157,7 @@ def prepare_options(args: argparse.Namespace, cfg, info: Optional[dict]) -> Simp
         _say('NOTE: --targets lists %d label(s) but tasks.%s.required is %d. The run ends with '
              "'no_targets' once no listed label is left; set --set tasks.%s.required=N if the "
              'referee asked for fewer objects.' % (n, args.task, required, args.task))
-    instructions, source = resolve_instructions(args, cfg, info)
     return SimpleNamespace(speed=sp.speed, configured_speed=sp.configured, targets=targets,
-                           instructions=instructions, instructions_source=source,
                            real=args.mode == 'real', enabled=False)
 
 
@@ -287,43 +237,6 @@ def _arm_text(arm) -> str:
     return '%s%s%s' % (state, ' (%s)' % ', '.join(extra) if extra else '', joints)
 
 
-def _spec_text(spec) -> str:
-    if not spec.ok:
-        return 'NOT UNDERSTOOD: %s' % spec.reason
-    count = 'all' if spec.count < 0 else str(spec.count)
-    return '%s x%s (%s) -> %s' % (spec.label, count, spec.selector, spec.zone)
-
-
-def _instruction_notes(cfg, text: str, zones) -> List[str]:
-    """
-    Return the parse preview of one L3 instruction (appended after its line).
-
-    One item ('  -> ...', the rule parse) without the LLM. With
-    tasks.L3.llm.enabled: the rule parse and the LLM parse on their own lines,
-    and which one the run uses (parse_instruction: the LLM unless it fails).
-    """
-    labels = cfg.get('tasks.L3.labels', []) or []
-    try:
-        from ..task.instruction import parse_instruction, parse_rules
-        rules = parse_rules(text, cfg, labels, zones)
-        if not bool(cfg.get('tasks.L3.llm.enabled', False)):
-            return ['  -> %s' % _spec_text(rules)]
-        final = parse_instruction(text, cfg, labels, zones)
-    except Exception as e:  # noqa: B902 - preview only
-        return ['  -> parse error: %s' % e]
-    out = ['', '       rules: %s' % _spec_text(rules)]
-    if final.source == 'llm':
-        disagree = final.reason.startswith('rules disagree')
-        out.append('       llm:   %s  [the run uses the LLM parse%s]' % (
-            _spec_text(final), '; it DISAGREES with the rules' if disagree else ''))
-    elif 'llm fallback: ' in final.reason:
-        out.append('       llm:   FAILED (%s)  [the run uses the rules parse]'
-                   % final.reason.split('llm fallback: ', 1)[1])
-    else:
-        out.append('       llm:   not asked (the rules refuse it as not supported)')
-    return out
-
-
 def summary_lines(args: argparse.Namespace, s, opts: SimpleNamespace) -> List[str]:
     """Return the pre-run summary shown to the operator."""
     cfg, task = s.cfg, args.task
@@ -336,32 +249,21 @@ def summary_lines(args: argparse.Namespace, s, opts: SimpleNamespace) -> List[st
 
     zones = _zones(cfg)
     row('config', _sources(cfg))
-    req = len(opts.instructions) if task == 'L3' else cfg.get('tasks.%s.required' % task, None)
+    req = cfg.get('tasks.%s.required' % task, None)
     row('round', 'time limit %s s, required %s' % (
         cfg.get('tasks.%s.time_limit_s' % task, None), req))
-    if task != 'L3':
-        c2z = dict(cfg.get('tasks.%s.class_to_zone' % task, {}) or {})
-        labels = [str(v) for v in (cfg.get('tasks.%s.labels' % task, []) or [])]
-        pairs = []
-        for lab in labels + [k for k in c2z if k not in labels]:
-            z = c2z.get(lab)
-            pairs.append('%s -> %s' % (lab, 'not picked (no zone)' if not z else
-                                       z if z in zones else '%s (ZONE MISSING)' % z))
-        row('labels', ', '.join(pairs) or 'NONE')
-        if opts.targets:
-            row('targets', '%s (only these, first available first)' % ', '.join(opts.targets))
-        elif cfg.get('tasks.%s.order' % task, None):
-            row('order', ', '.join(str(v) for v in cfg.get('tasks.%s.order' % task)))
-    else:
-        row('instructions', '%d from %s' % (len(opts.instructions), opts.instructions_source))
-        if bool(cfg.get('tasks.L3.llm.enabled', False)):
-            _say('asking the LLM to parse %d instruction(s) (%s, timeout %s s each) ...' % (
-                len(opts.instructions), cfg.get('tasks.L3.llm.url', ''),
-                cfg.get('tasks.L3.llm.timeout_s', 20)))
-        for i, text in enumerate(opts.instructions, 1):
-            notes = _instruction_notes(cfg, text, zones)
-            out.append('  %d. %s%s' % (i, text, notes[0]))
-            out.extend(notes[1:])
+    c2z = dict(cfg.get('tasks.%s.class_to_zone' % task, {}) or {})
+    labels = [str(v) for v in (cfg.get('tasks.%s.labels' % task, []) or [])]
+    pairs = []
+    for lab in labels + [k for k in c2z if k not in labels]:
+        z = c2z.get(lab)
+        pairs.append('%s -> %s' % (lab, 'not picked (no zone)' if not z else
+                                   z if z in zones else '%s (ZONE MISSING)' % z))
+    row('labels', ', '.join(pairs) or 'NONE')
+    if opts.targets:
+        row('targets', '%s (only these, first available first)' % ', '.join(opts.targets))
+    elif cfg.get('tasks.%s.order' % task, None):
+        row('order', ', '.join(str(v) for v in cfg.get('tasks.%s.order' % task)))
     row('zones', ', '.join('%s (%.3f, %.3f)' % (n, float(z.center[0]), float(z.center[1]))
                            for n, z in sorted(zones.items())) or 'NONE')
     row('camera', '%s, backend %s' % (cfg.get('camera.mount', None),
@@ -397,10 +299,7 @@ def _sim_truth(s, task: str, opts: SimpleNamespace, stop_reason: str = ''
                ) -> Optional[Dict[str, int]]:
     if s.world is None:
         return None
-    from .sim_bench import ground_truth, l3_expected
-    if task == 'L3' and (opts.instructions != list(s.info.get('instructions') or [])
-                         or not l3_expected(s.info)):
-        return None                     # custom instructions: no expected placement
+    from .sim_bench import ground_truth
     extras = getattr(opts, 'mujoco', None)
     if extras is not None:              # physics: settle, score, explain the failures
         res = extras.finish(s.info, stop_reason, logger=s.logger,
@@ -435,8 +334,6 @@ def report_lines(rep, fault_detail: str, truth: Optional[Dict[str, int]], task: 
         out.append('%-3d %-14s %-12s %-4s %-14s %-22s %7.1f' % (
             i, (p.label or '-')[:14], (p.zone or '-')[:12], 'yes' if p.ok else 'no',
             (p.stage or '-')[:14], (p.error or '')[:22], float(p.duration)))
-        if task == 'L3' and p.detail.get('instruction'):
-            out.append('      instruction: %s' % p.detail['instruction'])
     if not rep.picks:
         out.append('    (no pick attempted)')
     if fault_detail:
@@ -517,7 +414,7 @@ def _precheck(args: argparse.Namespace, s) -> bool:
 
 def _base_summary(args: argparse.Namespace, opts: SimpleNamespace) -> Dict[str, Any]:
     return {'task': args.task, 'mode': args.mode, 'dry_run': bool(args.dry_run),
-            'targets': list(opts.targets), 'instructions': opts.instructions,
+            'targets': list(opts.targets),
             'speed_percent': opts.speed, 'argv': list(sys.argv[1:])}
 
 
@@ -541,7 +438,7 @@ def _run_session(args: argparse.Namespace, s, opts: SimpleNamespace) -> int:
         arm = s.arm
         runner = TaskRunner(cfg, args.task, arm, s.camera, s.perception, s.clock, s.logger,
                             operator=s.operator, dry_run=args.dry_run,
-                            targets=opts.targets or None, instructions=opts.instructions,
+                            targets=opts.targets or None,
                             mode='real' if opts.real else 'sim')
     except ValueError as e:
         _say('REFUSED: configuration: %s' % e)

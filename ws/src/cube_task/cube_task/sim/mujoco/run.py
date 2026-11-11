@@ -419,8 +419,6 @@ def _r(v: Any) -> List[float]:
 # --------------------------------------------------------------- analysis
 def expected_zones(world: Any, info: Dict[str, Any]) -> Dict[str, str]:
     """Return object name -> the zone it must end in (targets only)."""
-    if info.get('task') == 'L3':
-        return {str(s['object']): str(s['zone']) for s in (info.get('instruction_specs') or [])}
     c2z = dict(info.get('class_to_zone') or {})
     return {rec.name: c2z[rec.label] for rec in world.objects if rec.label in c2z}
 
@@ -433,22 +431,11 @@ def final_truth(world: Any, info: Dict[str, Any], settle_s: float = FINAL_SETTLE
     Returns {correct, wrong, remaining, dropped}: correct = target at rest in
     its zone; wrong = any object at rest in another zone (non-targets
     included); remaining = targets over the table or held; dropped = objects
-    on the floor. L3 targets are the objects of info['instruction_specs'].
+    on the floor.
     """
     if settle_s > 0:
         world.settle(float(settle_s))
-    if info.get('task') != 'L3':
-        return world.score(dict(info.get('class_to_zone') or {}))
-    exp = expected_zones(world, info)
-    res = {'correct': 0, 'wrong': 0, 'remaining': 0, 'dropped': 0}
-    for name, st in world.object_status().items():
-        if st['status'] == 'zone':
-            res['correct' if exp.get(name) == st['zone'] else 'wrong'] += 1
-        elif st['status'] == 'dropped':
-            res['dropped'] += 1
-        elif name in exp:
-            res['remaining'] += 1
-    return res
+    return world.score(dict(info.get('class_to_zone') or {}))
 
 
 _STEP_CAUSE = {'grasp_miss': 'grasp miss (closed on nothing)',
@@ -703,7 +690,7 @@ class RunExtras:
                targets: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         """Settle, score and analyse; return {truth, failures, objects}."""
         truth = final_truth(self.world, info)
-        if targets and info.get('task') != 'L3':
+        if targets:
             c2z = {k: v for k, v in (info.get('class_to_zone') or {}).items() if k in targets}
             truth = self.world.score(c2z)
         failures = failure_causes(self.world, info, self.monitor, stop_reason)

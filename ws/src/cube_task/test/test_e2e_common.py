@@ -114,8 +114,6 @@ class SimRig:
         self.initial_xy = {o.name: o.center_xy().copy() for o in self.world.objects}
 
     def runner(self, camera=None, arm=None, **kw) -> TaskRunner:
-        if self.task == 'L3' and 'instructions' not in kw:
-            kw['instructions'] = list(self.info['instructions'])
         return TaskRunner(self.cfg, self.task, arm or self.arm, camera or self.camera,
                           self.session.perception, self.clock, self.logger, mode='sim', **kw)
 

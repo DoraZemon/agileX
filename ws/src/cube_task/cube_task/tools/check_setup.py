@@ -3,7 +3,7 @@ Pre-flight checks before a round. Nothing moves and nothing is enabled.
 
 Examples::
 
-    check_setup                        # real mode: modules, CAN, ROS topics, L1-L3 config
+    check_setup                        # real mode: modules, CAN, ROS topics, L1 / L2 config
     check_setup --task L2 --live       # also read the arm (no enable) and one camera frame
     check_setup --mode sim --task L1   # config of a simulated scenario
     check_setup --skip can,ros         # only modules and config (laptop without hardware)
@@ -403,11 +403,6 @@ def config_messages(cfg, task: str) -> List[str]:
     return msgs
 
 
-def _task_configured(cfg, task: str) -> bool:
-    return bool(cfg.get('tasks.%s.labels' % task, None)) or bool(
-        cfg.get('tasks.%s.instructions_file' % task, None))
-
-
 def check_config(rep: Report, args: argparse.Namespace, tasks: Sequence[str],
                  explicit: bool) -> None:
     """Run the config-only self check for each task; lines common to tasks print once."""
@@ -423,10 +418,6 @@ def check_config(rep: Report, args: argparse.Namespace, tasks: Sequence[str],
             continue
         except Exception as e:  # noqa: B902 - any load problem is a finding
             rep.fail('config', '%s: config could not be loaded: %s' % (task, e))
-            continue
-        if not explicit and task == 'L3' and not _task_configured(cfg, task):
-            rep.warn('config', 'L3 (optional) is not configured; skipped',
-                     'only needed if you take part in L3: set tasks.L3.* in tasks.yaml')
             continue
         try:
             msgs = config_messages(cfg, task)

@@ -138,10 +138,8 @@ class VideoRecorder:
         self.title = title or '%s seed %s | %s %s | MuJoCo physics' % (
             info.get('task', '?'), info.get('seed', '?'), info.get('mount', '?'),
             info.get('difficulty', 'normal'))
-        task = info.get('task')
-        self.required = int(len(info.get('instructions') or []) if task == 'L3'
-                            else info.get('required', 0) or 0)
-        self.class_to_zone = dict(info.get('class_to_zone') or {}) if task != 'L3' else {}
+        self.required = int(info.get('required', 0) or 0)
+        self.class_to_zone = dict(info.get('class_to_zone') or {})
         self.time_limit = float(info.get('time_limit_s', 0.0) or 0.0)
         self.frames = 0
         self._renderer = None

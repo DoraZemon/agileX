@@ -77,8 +77,7 @@ def test_zone_sources_and_zone_users(tmp_path):
         str(other), '--set zones.veg_bin.size', '--set zones']
     assert tp.zone_sources(sources[:3], 'fruit_bin', poses) == []
     tasks = {'L1': {'class_to_zone': {'red': 'zone_red'}},
-             'L2': {'class_to_zone': {'carrot': 'veg_bin', 'corn': 'veg_bin', 'apple': 'f'}},
-             'L3': None}
+             'L2': {'class_to_zone': {'carrot': 'veg_bin', 'corn': 'veg_bin', 'apple': 'f'}}}
     assert tp.zone_users(tasks, 'veg_bin') == ['tasks.L2.class_to_zone (carrot, corn)']
     assert tp.zone_users(tasks, 'zone_x') == [] and tp.zone_users(None, 'a') == []
 

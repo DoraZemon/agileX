@@ -114,7 +114,7 @@ def test_zone_from_touches_keeps_a_given_yaw_and_rejects_bad_input():
 def test_zone_names_suggestions_and_validation():
     tasks = {'L1': {'class_to_zone': {'red': 'zone_red', 'green': 'zone_green',
                                       'blue': 'zone_red'}},
-             'L2': {'class_to_zone': {'apple': 'fruit_bin'}}, 'L3': {'class_to_zone': {}},
+             'L2': {'class_to_zone': {'apple': 'fruit_bin'}},
              'x': None}
     assert tp.task_zone_names(tasks) == ['zone_red', 'zone_green', 'fruit_bin']
     assert tp.suggest_zone_names(tasks, ['zone_red']) == ['zone_green', 'fruit_bin']

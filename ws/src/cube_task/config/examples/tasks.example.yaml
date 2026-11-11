@@ -21,14 +21,3 @@ tasks:
       persimmon: zone_red
       bell_pepper: zone_red
     order: []                  # 不要设置：先放梨会让黄瓜在绿区放不下
-  L3:
-    classifier: knn
-    labels: [apple, banana, orange, carrot, eggplant, corn]
-    instructions_file: ''      # 一行一条指令的 UTF-8 文件；比赛时一般用 run_task --instructions-file
-    label_aliases:             # 常见果蔬的中文名已内置，这里只补官方的叫法
-      apple: [苹果]
-      banana: [香蕉]
-    zone_aliases:
-      fruit_bin: [水果盒, 水果框, 蓝色托盘]
-      veg_bin: [蔬菜盒, 蔬菜框, 绿色托盘]
-    left_axis: [0.0, 1.0]      # 指令里的“左边” = 基座 +y；现场确认是从谁的视角看

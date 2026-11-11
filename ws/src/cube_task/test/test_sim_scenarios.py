@@ -56,7 +56,7 @@ def test_deterministic(task, diff):
     w3, _ = sc.make_scenario(task, 5, difficulty=diff)
     assert [o.name for o in w1.objects] == [o.name for o in w2.objects]
     assert all(np.array_equal(a.T_base_obj, b.T_base_obj) for a, b in zip(w1.objects, w2.objects))
-    assert i1['labels'] == i2['labels'] and i1.get('instructions') == i2.get('instructions')
+    assert i1['labels'] == i2['labels']
     assert not all(np.allclose(a.T_base_obj, b.T_base_obj) for a, b in zip(w1.objects, w3.objects))
 
 
@@ -121,15 +121,6 @@ def test_l2_l3_content():
         assert zone == ('fruit_bin' if lab in sc.FRUITS else 'veg_bin')
     _, info = sc.make_scenario('L2', 3, difficulty='hard')
     assert info['labels'] == sorted(sc.CATALOG)
-    w, info = sc.make_scenario('L3', 3)
-    assert len(info['instructions']) == 5 and info['class_to_zone'] == {}
-    apples = [o for o in w.objects if o.label == 'apple']
-    left = max(apples, key=lambda o: o.center_xy()[1])
-    spec = info['instruction_specs'][0]
-    assert spec['selector'] == 'leftmost' and spec['object'] == left.name
-    for s in info['instruction_specs']:
-        assert w.object(s['object']).label == s['label'] and s['zone'] in info['zones']
-        assert s['zone'] in info['zone_aliases']
 
 
 def test_ik_round_trip_and_limits():
@@ -193,7 +184,7 @@ def test_observe_pose_gripper_leaves_pick_area_unoccluded(mount):
             assert 0 <= intr.fy * p[1] / p[2] + intr.cy < intr.height
 
 
-@pytest.mark.parametrize('task,mount', [('L1', 'eye_to_hand'), ('L3', 'eye_in_hand')])
+@pytest.mark.parametrize('task,mount', [('L1', 'eye_to_hand'), ('L2', 'eye_in_hand')])
 def test_config_overlay(task, mount):
     _, info = sc.make_scenario(task, 6, mount=mount)
     ov = sc.scenario_config_overlay(info, extrinsics_error=(0.004, 1.5))
@@ -227,7 +218,5 @@ def test_config_overlay(task, mount):
     assert np.allclose(np.array(exact['camera']['extrinsics_inline']['matrix']), info[key])
     assert merged['sim']['intrinsics']['fx'] == 380.0
     assert merged['sim']['intrinsics']['width'] == 640
-    if task == 'L3':
-        assert merged['tasks']['L3']['zone_aliases']['zone_blue'][0] == '蓝色托盘'
     with pytest.raises(ValueError):
         sc.scenario_config_overlay(info, extrinsics_error=(-0.01, 0.0))

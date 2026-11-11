@@ -23,7 +23,7 @@ from ..core.config import Config, deep_merge, load_config
 
 _LOG = logging.getLogger('cube_task.tools')
 
-TASKS = ('L1', 'L2', 'L3')
+TASKS = ('L1', 'L2')
 
 
 def add_common_args(p: argparse.ArgumentParser, task_required: bool = False,

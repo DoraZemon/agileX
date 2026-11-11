@@ -208,11 +208,9 @@ def test_task_gripper_force_defaults_overrides_and_clamp():
     cfg = make_cfg()
     assert gripper_force_for(cfg, 'L1') == pytest.approx(1.5)
     assert gripper_force_for(cfg, 'L2') == pytest.approx(2.5)
-    assert gripper_force_for(cfg, 'L3') == pytest.approx(2.5)
     assert gripper_force_for(cfg, None) == pytest.approx(1.5)        # robot.gripper.force
     cfg.set('tasks.L2.gripper_force', 2.0)
     assert gripper_force_for(cfg, 'L2') == pytest.approx(2.0)
-    assert gripper_force_for(cfg, 'L3') == pytest.approx(2.0)
     cfg.set('tasks.L1.gripper_force', 5.0)
     assert gripper_force_for(cfg, 'L1') == pytest.approx(3.0)
     clock = SimClock()

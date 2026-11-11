@@ -1,5 +1,5 @@
 """
-Teach the KNN instance classifier from the real camera (L2; also L1 / L3).
+Teach the KNN instance classifier from the real camera (L2; also L1).
 
 Live loop: each view is one capture (median depth of camera.frames_to_average
 frames) segmented with the classifier disabled. The valid instances are
@@ -652,12 +652,11 @@ def config_hints(cfg, task: Optional[str], mode: str, path: Path, classes: Seque
     if not known:
         hints.append('tasks.%s.labels is empty: set tasks.%s.labels: [%s] in %s'
                      % (task, task, ', '.join(classes), tasks_yaml))
-    if task != 'L3':
-        ctz = cfg.get('tasks.%s.class_to_zone' % task, {}) or {}
-        nozone = [c for c in classes if c not in ctz]
-        if nozone:
-            hints.append('tasks.%s.class_to_zone has no zone for %s (never picked); set it in %s'
-                         % (task, ', '.join(nozone), tasks_yaml))
+    ctz = cfg.get('tasks.%s.class_to_zone' % task, {}) or {}
+    nozone = [c for c in classes if c not in ctz]
+    if nozone:
+        hints.append('tasks.%s.class_to_zone has no zone for %s (never picked); set it in %s'
+                     % (task, ', '.join(nozone), tasks_yaml))
     return hints
 
 

@@ -241,7 +241,7 @@ class Zone:
     yaw: float = 0.0                       # zone x axis angle in base XY
     wall_height: float = 0.0               # rim height above floor (0 = flat mat)
     release_height: Optional[float] = None  # overrides place.release_height
-    label: str = ''                        # free text (color / category) for logs and L3
+    label: str = ''                        # free text (color / category) for logs
 
     def contains_xy(self, x: float, y: float, margin: float = 0.0) -> bool:
         c, s = np.cos(-self.yaw), np.sin(-self.yaw)

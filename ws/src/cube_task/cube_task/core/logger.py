@@ -160,7 +160,7 @@ class RunLogger:
     base_dir
         Parent directory (``~`` is expanded; None = system temp dir).
     task
-        Task name ('L1', 'L2', 'L3', 'sim_bench', ...), used in the name.
+        Task name ('L1', 'L2', 'sim_bench', ...), used in the name.
     clock
         Injected Clock; event times are ``clock.now() - start`` seconds.
     save_images

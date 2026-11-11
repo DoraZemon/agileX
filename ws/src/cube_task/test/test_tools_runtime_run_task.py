@@ -76,7 +76,6 @@ def test_targets_restrict_labels(monkeypatch, capsys, tmp_path):
     (['--speed', '50'], 'above robot.speed_percent 30'),
     (['--speed', '0'], '--speed must be in 1..100'),
     (['--targets', 'purple'], "target 'purple' is not a L1 label"),
-    (['--instruction', 'pick the apple'], 'are for --task L3'),
     (['--set', 'tasks.L1.class_to_zone={}'], 'class_to_zone is empty'),
 ])
 def test_refusals_exit_2_without_motion(monkeypatch, capsys, caplog, tmp_path, extra, needle):
@@ -90,14 +89,6 @@ def test_refusals_exit_2_without_motion(monkeypatch, capsys, caplog, tmp_path, e
     assert moved == []
     for s in sessions:
         assert s.arm is None                                # closed again
-
-
-def test_l3_without_instructions_is_refused(monkeypatch, capsys, tmp_path):
-    empty = tmp_path / 'none.txt'
-    empty.write_text('# only a comment\n\n', encoding='utf-8')
-    code = _main(monkeypatch, tmp_path, '--task', 'L3', '--instructions-file', str(empty))
-    assert code == run_task.EXIT_REFUSED
-    assert 'no L3 instructions' in capsys.readouterr().out
 
 
 def test_allow_faster_raises_the_speed(monkeypatch, capsys, tmp_path):

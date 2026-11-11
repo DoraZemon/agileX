@@ -173,8 +173,10 @@ def test_held_offset_of_plan():
     assert held_offset_of(p) == pytest.approx(0.04 - 0.02)
 
 
-def test_l3_block_labels_use_square_rule():
-    p = GraspPlanner(make_cfg(), 'L3').plan(make_det('red', 0.3, 0.1, size=0.03, yaw=0.6))
+def test_l2_block_labels_use_square_rule():
+    cfg = make_cfg()
+    cfg.set('tasks.L2.labels', ['red', 'apple'])
+    p = GraspPlanner(cfg, 'L2').plan(make_det('red', 0.3, 0.1, size=0.03, yaw=0.6))
     assert _ang_mod(p.closing_angle - 0.6, math.pi / 2) < 1e-9
-    q = GraspPlanner(make_cfg(), 'L3').plan(make_det('apple', 0.3, 0.1, size=0.05, yaw=0.6))
+    q = GraspPlanner(cfg, 'L2').plan(make_det('apple', 0.3, 0.1, size=0.05, yaw=0.6))
     assert q.closing_angle == pytest.approx(neutral_closing_angle(0.3, 0.1))

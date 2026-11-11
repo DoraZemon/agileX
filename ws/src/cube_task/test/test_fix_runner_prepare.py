@@ -1,4 +1,4 @@
-"""Runner preparation fixes: eye_in_hand view check, held object, start lift, keys, L3 parse."""
+"""Runner preparation fixes: eye_in_hand view check, held object, start lift, keys."""
 from __future__ import annotations
 
 import io
@@ -286,25 +286,3 @@ def test_enter_typed_during_the_observe_move_does_not_start_the_round():
     assert early.is_set(), 'the reader saw the early Enter during the move'
     assert out.cleared_at_prompt is True, 'the early Enter must be discarded at the prompt'
     assert rep.ok and rep.placed == 1
-
-
-# ---------------------------------------------------------------- L3 parse timing
-def test_l3_instructions_are_parsed_before_the_timer_starts(monkeypatch):
-    import cube_task.task.runner as runner_mod
-    rig = Rig('L3')
-    rig.world.add(make_det('apple', 0.25, -0.10, size=0.05, length=0.055))
-    rig.world.add(make_det('carrot', 0.22, 0.05, size=0.03, length=0.14))
-    calls = []
-    real = runner_mod.parse_instruction
-
-    def recording(text, cfg, labels=None, zones=None):
-        calls.append(rig.clock.now())
-        return real(text, cfg, labels, zones)
-    monkeypatch.setattr(runner_mod, 'parse_instruction', recording)
-    texts = ['把苹果放到蓝色托盘', '把西瓜放到红色托盘', '把胡萝卜放到绿色区域']
-    rep = rig.runner(instructions=texts).run()
-    t0 = rig.logger.kinds('start')[0]['t0']
-    assert len(calls) == 3 and max(calls) <= t0
-    assert [p.ok for p in rep.picks] == [True, False, True]
-    assert len(rig.logger.kinds('instruction')) == 3       # still logged per instruction
-    assert len(rig.logger.kinds('instructions_parsed')[0]['specs']) == 3

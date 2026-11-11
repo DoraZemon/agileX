@@ -133,7 +133,7 @@ def test_can_up_rejects_bad_names(fake):
 
 def test_start_requires_a_task(fake):
     r = fake(START)
-    assert r.returncode == 2 and 'L1, L2 or L3' in r.stdout
+    assert r.returncode == 2 and 'L1 or L2' in r.stdout
     assert fake(START, 'L1', '--mode', 'sim').returncode == 2
 
 
