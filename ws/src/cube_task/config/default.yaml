@@ -24,7 +24,7 @@ robot:
   # SITE: measure flange face -> fingertip center along the flange z axis.
   tcp_offset: [0.0, 0.0, 0.140, 0.0, 0.0, 0.0]
   gripper:
-    max_width: 0.070           # SITE: 0.070 standard gripper, 0.100 new gripper
+    max_width: 0.100           # SITE: gripper stroke 100 mm (PIPER manual)
     open_margin: 0.020         # open to object width + margin before descending
     close_width: 0.0           # commanded width when grasping
     force: 1.5                 # N, range [0, 3]

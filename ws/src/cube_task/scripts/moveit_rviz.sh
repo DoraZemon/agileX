@@ -26,6 +26,7 @@ ros2 launch "$L/rsp.launch.py" "${ARGS[@]}" & pids+=($!)
 ros2 launch "$L/move_group.launch.py" "${ARGS[@]}" & pids+=($!)
 if [ "${1:-}" != "--no-rviz" ]; then
     sleep 3
-    ros2 launch "$L/moveit_rviz.launch.py" "${ARGS[@]}" & pids+=($!)
+    ros2 launch "$L/moveit_rviz.launch.py" "${ARGS[@]}" \
+        rviz_config:="$WS/src/agx_arm_ros/src/agx_arm_moveit/config/moveit.rviz" & pids+=($!)
 fi
 wait
