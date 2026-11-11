@@ -36,3 +36,9 @@ datasets/
 *.swp
 .DS_Store
 data/
+
+# 大白相机驱动和依赖（从 GitHub 下载，不进 git；重新下载见 scripts/camera_check.sh --help）
+ws/src/camera_drivers/
+ws/third_party_include/
+# OrbbecSDK 在当前目录写的日志
+Log/

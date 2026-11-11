@@ -117,6 +117,10 @@ python3 -m pytest -q -p no:cacheprovider test/
 | `teach_classes` | 否 | 录果蔬样本，训练 KNN → models/knn_model.npz | 现场流程 |
 | `sim_bench` | 否 | 批量仿真：成功率、用时、放错 | 仿真与测试 |
 | `motion_ctl` | 是（`status` 除外，先确认） | 运控调试：`pick` 按坐标抓、`vision` 按视觉目标抓、`gripper`、`moveit` 接 MoveIt/RViz 拖动；复用比赛的抓放流程和 `SafeArm` | 运控使用说明 |
+| `scripts/arm_check.sh` | 是（第 4 步确认后） | 实机部署 1：CAN → 机械臂反馈帧 → 只读状态 → RViz 拖动控制（`--plan-only` 只规划） | `--help` |
+| `scripts/camera_check.sh` | 否 | 实机部署 2：USB → udev → 大白驱动 → cube_task 取 RGB-D 帧 → RViz 显示 RGB、深度、点云（`--realsense` 用 D435i 练习） | `--help` |
+| `scripts/handeye.sh` | 否（悬停核对时动） | 实机部署 3：腕端相机手眼标定（`calib_points`，拖动示教触碰方块顶面中心），再 `calib_verify` 悬停核对 | `--help` |
+| `scripts/capture_dataset.sh` | 否 | 实机部署 4：采集数据集，每帧存 RGB（`*_color.png`）、对齐深度和机械臂位姿 | `--help` |
 | `scripts/moveit_rviz.sh` | 否 | 启动 robot_state_publisher + move_group + RViz（`--no-rviz` 无界面）；配合 `motion_ctl moveit` | 运控使用说明 |
 | `tools/yolo/*` | 否 | YOLO 数据集、训练、导出 ONNX、检查 | docs/yolo.md |
 
@@ -131,7 +135,7 @@ cube_task/                   包根目录（环境变量 CUBE_TASK_ROOT 可改�
 ├── config/site/             现场文件，覆盖 default.yaml（docs/配置说明.md）
 ├── config/examples/         现场文件模板
 ├── models/                  knn_model.npz、detector.onnx（*.onnx 不进 git，要单独备份）
-├── scripts/                 can_up.sh、start.sh、mujoco_run.sh、moveit_rviz.sh
+├── scripts/                 arm_check / camera_check / handeye / capture_dataset（实机部署）、can_up、start、moveit_rviz、mujoco_run
 ├── docs/                    文档
 ├── cube_task/core/          配置、坐标变换、外参、日志、时钟、数据类型
 ├── cube_task/camera/        ROS 相机、文件回放、录制、深度对齐

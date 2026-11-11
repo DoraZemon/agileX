@@ -77,10 +77,21 @@ def _log(fake, name):
     return p.read_text().splitlines() if p.exists() else []
 
 
+ONSITE = [ROOT / 'scripts' / n for n in ('arm_check.sh', 'camera_check.sh', 'handeye.sh',
+                                          'capture_dataset.sh')]
+
+
 def test_scripts_parse():
-    for s in (CAN_UP, START):
+    for s in [CAN_UP, START, ROOT / 'scripts' / '_env.sh'] + ONSITE:
         assert subprocess.run(['bash', '-n', str(s)]).returncode == 0
+    for s in [CAN_UP, START] + ONSITE:
         assert os.access(str(s), os.X_OK)
+
+
+@pytest.mark.parametrize('script', ONSITE, ids=lambda p: p.name)
+def test_onsite_scripts_have_help(script):
+    out = subprocess.run(['bash', str(script), '--help'], capture_output=True, text=True)
+    assert out.returncode == 0 and 'Usage: bash scripts/%s' % script.name in out.stdout
 
 
 def test_can_up_check_ok(fake):
