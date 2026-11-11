@@ -1,4 +1,5 @@
-# 复制成 config/site/extrinsics.yaml，换成官方标定结果。这里的数值只是例子
+# config/site/extrinsics.yaml 的格式。组委会不提供标定文件和手眼参数（答疑 Q8/Q9），
+# 正常由 calib_points 在自己的调试时段里标定后写入；这里的数值只是例子
 # （仿真里的固定相机：在基座前方 0.70 m、高 0.62 m，向下看取物区）。
 #
 # matrix 把相机坐标（彩色光学坐标系：x 右、y 下、z 朝前）变到 parent_frame：p_parent = matrix @ p_camera，单位 m。

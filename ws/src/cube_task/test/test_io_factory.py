@@ -74,8 +74,8 @@ def test_unknown_backend():
 
 def test_sim_eye_to_hand(fake_sim):
     clock, world = SimClock(), object()
-    cfg = _cfg(camera__backend='sim', sim__intrinsics=INTR, sim__T_base_camera=T_BC,
-               sim__T_flange_camera=T_FC, sim__seed=7)
+    cfg = _cfg(camera__backend='sim', camera__mount='eye_to_hand', sim__intrinsics=INTR,
+               sim__T_base_camera=T_BC, sim__T_flange_camera=T_FC, sim__seed=7)
     make_camera(cfg, clock, sim_world=world)
     kw = fake_sim[-1]
     assert kw['world'] is world and kw['clock'] is clock and kw['arm'] is None
@@ -106,7 +106,8 @@ def test_sim_eye_in_hand(fake_sim):
     ({'sim__T_base_camera': [[1, 0], [0, 1]]}, '4x4'),
 ])
 def test_sim_missing_params(fake_sim, over, match):
-    kw = {'camera__backend': 'sim', 'sim__intrinsics': INTR, 'sim__T_base_camera': T_BC}
+    kw = {'camera__backend': 'sim', 'camera__mount': 'eye_to_hand', 'sim__intrinsics': INTR,
+          'sim__T_base_camera': T_BC}
     kw.update(over)
     world = None if match == 'sim_world' else object()
     with pytest.raises(ValueError, match=match):

@@ -72,8 +72,10 @@ robot:
 
 camera:
   backend: ros                 # ros | file | sim
-  mount: eye_to_hand           # eye_to_hand | eye_in_hand. SITE
-  # SITE: official calibration. eye_to_hand: T_base_camera. eye_in_hand: T_flange_camera.
+  # eye_to_hand | eye_in_hand. The competition has only the organizers' wrist camera.
+  mount: eye_in_hand
+  # eye_to_hand: T_base_camera. eye_in_hand: T_flange_camera. SITE: no official file;
+  # calibrate on the shared arm with tools/calib_points.
   extrinsics_file: config/site/extrinsics.yaml
   # Inline alternative used by simulation: {mount: ..., matrix: 4x4}. Wins over the file.
   extrinsics_inline: null
@@ -109,7 +111,7 @@ camera:
 
 perception:
   debug_image: true
-  l1_block_size: 0.035         # SITE: edge length of the L1 cubes (used to cut merged blocks)
+  l1_block_size: 0.05          # edge length of the L1 cubes (used to cut merged blocks)
   depth:
     min_z: 0.15                # valid depth range (m)
     max_z: 3.0
@@ -228,7 +230,7 @@ tasks:
     time_limit_s: 180
     required: 3
     classifier: color
-    labels: [red, green, blue]   # SITE: block classes in this round
+    labels: [red, green, yellow] # block classes in this round
     # label -> zone name. A target whose label is missing here is never picked.
     class_to_zone: {}
     order: []                  # optional fixed label order (referee-specified targets)

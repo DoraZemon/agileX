@@ -23,10 +23,12 @@ from test_perception_synth import Box, Sphere  # noqa: E402
 
 CAMS = {'overhead': S.overhead_camera(), 'oblique': S.oblique_camera()}
 LABELS = ['red', 'green', 'blue', 'yellow']
+BLOCK = 0.035                # edge of the blocks in these scenes (m)
 
 
 def _cfg(**over):
     cfg = load_config(use_overlays=False)
+    cfg.set('perception.l1_block_size', BLOCK)
     for k, v in over.items():
         cfg.set(k, v)
     return cfg

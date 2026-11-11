@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 
 from cube_task.core.transforms import make_T, rot_x, rot_z, top_down_T
-from cube_task.sim.world import SimObject, SimWorld, SimZone, point_in_polygon
+from cube_task.sim.world import (OFFICIAL_MIN_ZONE_FRACTION, OFFICIAL_ZONE_FRACTION_BY_LABEL,
+                                 SimObject, SimWorld, SimZone, point_in_polygon)
 
 
 def cube(name='c', label='red', edge=0.03, x=0.30, y=0.0, yaw=0.0):
@@ -241,3 +242,21 @@ def test_zone_fraction_rule_counts_two_thirds_of_the_projection():
     assert rule.score({'cucumber': 'zone_green'})['correct'] == 1
     with pytest.raises(ValueError):
         SimWorld(min_zone_fraction=0.0)
+
+
+def test_official_rule_needs_full_inside_except_cucumber():
+    card = SimZone('zone_red', (0.30, 0.0, 0.0), (0.20, 0.20))
+    cube = SimObject('c', 'red', 'box', (0.05, 0.05, 0.05), (40, 40, 200), np.eye(4))
+    rod = SimObject('rod', 'cucumber', 'box', (0.26, 0.04, 0.04), (30, 95, 35), np.eye(4))
+    w = SimWorld(objects=[cube, rod], zones=[card],
+                 min_zone_fraction=OFFICIAL_MIN_ZONE_FRACTION,
+                 zone_fraction_by_label=OFFICIAL_ZONE_FRACTION_BY_LABEL)
+    rod.place_upright(0.80, 0.0, 0.0, 0.0)
+    cube.place_upright(0.30 + 0.07, 0.0, 0.0, 0.0)
+    assert w.zone_of(cube) is card
+    cube.place_upright(0.30 + 0.08, 0.0, 0.0, 0.0)
+    assert w.zone_of(cube) is None
+    rod.place_upright(0.30, 0.0, 0.0, 0.0)
+    assert w.zone_of(rod) is card
+    with pytest.raises(ValueError):
+        SimWorld(zone_fraction_by_label={'cucumber': 1.5})

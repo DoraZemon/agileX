@@ -56,6 +56,10 @@ GRASP_SLIP_TAPER_DEG = 30.0
 WALL_THICKNESS = 0.004       # m, walls of binned zones, outside the zone interior
 SAMPLE_SPACING = 0.0025      # m, surface sample spacing used for grasp geometry
 FOOTPRINT_STEP = 0.004       # m, grid spacing of the footprint area (SimWorld.min_zone_fraction)
+# Competition placement rule: the whole vertical projection inside the zone, except the
+# cucumber (longer than a 200 mm card), which needs >= 2/3 of it inside.
+OFFICIAL_MIN_ZONE_FRACTION = 1.0
+OFFICIAL_ZONE_FRACTION_BY_LABEL = {'cucumber': 2.0 / 3.0}
 
 
 def _finite_array(value: Any, shape: Tuple[int, ...], what: str) -> np.ndarray:
@@ -797,20 +801,29 @@ class SimWorld:
 
     min_zone_fraction: None (an object is in the zone holding its footprint
     center) or the share of its vertical projection (0..1] that must lie in
-    a zone for the object to count as placed there (competition rule: 2/3).
+    a zone for the object to count as placed there. zone_fraction_by_label:
+    label -> share, overriding min_zone_fraction for that label. The
+    competition rule is OFFICIAL_MIN_ZONE_FRACTION with
+    OFFICIAL_ZONE_FRACTION_BY_LABEL.
     """
 
     def __init__(self, table_z: float = 0.0, objects: Optional[List[SimObject]] = None,
                  zones: Optional[List[SimZone]] = None,
                  table_color_bgr: Sequence[Any] = (168, 172, 176), seed: int = 0,
-                 min_zone_fraction: Optional[float] = None):
+                 min_zone_fraction: Optional[float] = None,
+                 zone_fraction_by_label: Optional[Dict[str, float]] = None):
         tz = float(table_z)
         if not math.isfinite(tz):
             raise ValueError('table_z must be finite')
-        if min_zone_fraction is not None and not 0.0 < float(min_zone_fraction) <= 1.0:
-            raise ValueError('min_zone_fraction must be in (0, 1], got %r' % (min_zone_fraction,))
+        by_label = {str(k): v for k, v in (zone_fraction_by_label or {}).items()}
+        for what, f in [('min_zone_fraction', min_zone_fraction)] + [
+                ('zone_fraction_by_label[%s]' % k, v) for k, v in by_label.items()]:
+            if f is not None and not 0.0 < float(f) <= 1.0:
+                raise ValueError('%s must be in (0, 1], got %r' % (what, f))
         self.min_zone_fraction = (None if min_zone_fraction is None
                                   else float(min_zone_fraction))
+        self.zone_fraction_by_label = {k: float(v) for k, v in by_label.items()
+                                       if v is not None}
         self.table_z = tz
         self.objects: List[SimObject] = list(objects or [])
         self.zones: List[SimZone] = list(zones or [])
@@ -864,22 +877,27 @@ class SimWorld:
         """Return the share (0..1) of obj's vertical projection inside zone."""
         return float(np.mean(zone.contains_points(obj.footprint_points())))
 
+    def required_zone_fraction(self, obj: SimObject) -> Optional[float]:
+        """Return the projection share obj needs inside a zone (None = center rule)."""
+        return self.zone_fraction_by_label.get(obj.label, self.min_zone_fraction)
+
     def zone_of(self, obj: SimObject) -> Optional[SimZone]:
         """
         Return the zone holding obj, None if not in one or held.
 
-        By its footprint center, or with min_zone_fraction set the zone holding
-        the largest share of its projection if that share reaches it.
+        By its footprint center, or with a required share (required_zone_fraction)
+        the zone holding the largest share of its projection if that share reaches it.
         """
         if obj is self.held:
             return None
-        if self.min_zone_fraction is None:
+        need = self.required_zone_fraction(obj)
+        if need is None:
             c = obj.center_xy()
             return self.zone_at(float(c[0]), float(c[1]))
         best: Optional[Tuple[float, SimZone]] = None
         for z in self.zones:
             f = self.zone_fraction(obj, z)
-            if f >= self.min_zone_fraction - 1e-9 and (best is None or f > best[0]):
+            if f >= need - 1e-9 and (best is None or f > best[0]):
                 best = (f, z)
         return None if best is None else best[1]
 
@@ -1041,7 +1059,7 @@ class SimWorld:
         The object keeps its footprint center xy and yaw, becomes upright and
         rests on the floor of the zone containing that xy (zone floor z =
         center[2]) or on the table. A partly outside object counts by its
-        center (by zone_of with min_zone_fraction set). Returns None when
+        center (by zone_of with a required share set). Returns None when
         nothing was held or it landed on the table; .last_release tells the
         two apart.
         """
@@ -1060,7 +1078,7 @@ class SimWorld:
         zone = self.zone_at(float(c[0]), float(c[1]))
         floor = zone.floor_z if zone is not None else self.table_z
         obj.place_upright(float(c[0]), float(c[1]), yaw, floor)
-        if self.min_zone_fraction is not None:
+        if self.required_zone_fraction(obj) is not None:
             zone = self.zone_of(obj)
         drop = bottom_before - floor
         self.last_release = {'ok': True, 'reason': '', 'object': obj.name,
