@@ -1,0 +1,60 @@
+# 相机配置：内参、外参（手眼标定结果）、话题、标定板。复制成 config/camera.yaml 再改。
+# 程序只读这一个文件；手眼标定工具会把结果写回 extrinsics 段，其他段保持不变。
+#
+# 坐标约定（与 pyAgxArm / cube_task 相同）：
+#   T_a_b 把 b 坐标系里的点变到 a：p_a = T_a_b @ p_b，单位 m。
+#   相机坐标系 = 彩色光学坐标系（x 右、y 下、z 朝前）。
+#   pose6 = [x, y, z, roll, pitch, yaw]，R = Rz(yaw) Ry(pitch) Rx(roll)，弧度。
+
+# eye_to_hand：相机固定在支架上，extrinsics 是 T_base_camera
+# eye_in_hand：相机装在手腕上，extrinsics 是 T_flange_camera（法兰 = link6），
+#              T_base_camera = T_base_flange(拍照时) @ T_flange_camera
+mount: eye_to_hand
+
+topics:
+  color: /camera/color/image_raw
+  depth: /camera/depth/image_raw
+  info: /camera/color/camera_info
+depth_scale: 0.001         # 16UC1 深度单位 -> m
+depth_registered: true     # 深度已对齐到彩色图（奥比中光驱动 depth_registration:=true）
+
+# 末端 TCP 相对法兰的偏移（只用于把“相对 TCP 的外参”换成相对法兰，以及打印 TCP 位置）
+tcp_offset: [0.0, 0.0, 0.1425, 0.0, 0.0, 0.0]
+
+# 彩色图内参。null = 运行时用 CameraInfo。手填时 dist 按 OpenCV 顺序 k1 k2 p1 p2 k3。
+intrinsics:
+  fx: 380.0
+  fy: 380.0
+  cx: 319.5
+  cy: 239.5
+  width: 640
+  height: 480
+  dist: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+# 外参。下面任选一种写法（同时写多种时必须一致）：
+#   matrix: 4x4                                   （配合 parent_frame: base / flange）
+#   translation: [x,y,z] + quaternion: [x,y,z,w]
+#   xyz: [x,y,z] + rpy: [r,p,y]（弧度）或 rpy_deg
+#   T_base_camera / T_flange_camera / T_tcp_camera: {matrix: ...}  直接给方向
+#   T_camera_base / T_camera_flange / T_camera_tcp: {...}          反方向，加载时自动求逆
+# 相对 TCP 的结果要加 tcp_offset（标定时驱动用的 TCP 偏移），会换算成相对法兰。
+# child_frame 不是 *_optical_frame（例如 camera_link）时，必须给 T_link_optical。
+# 示例数值：基座前方 0.70 m、高 0.62 m，向下看取物区。
+extrinsics:
+  parent_frame: base
+  child_frame: camera_color_optical_frame
+  matrix:
+    - [0.0000,  0.8403, -0.5421, 0.7000]
+    - [1.0000,  0.0000,  0.0000, 0.0000]
+    - [0.0000, -0.5421, -0.8403, 0.6200]
+    - [0.0000,  0.0000,  0.0000, 1.0000]
+  source: example_only
+
+# 手眼标定用的 ChArUco 板。生成打印图：python3 -m piper_vision board --out board.png
+# 打印时 100% 比例，打印后用尺子量一个格子，把实测值写进 square_m / marker_m。
+board:
+  squares_x: 5
+  squares_y: 7             # 行数保持奇数，不同 OpenCV 版本的板子布局才一致
+  square_m: 0.030
+  marker_m: 0.022
+  dictionary: DICT_5X5_100

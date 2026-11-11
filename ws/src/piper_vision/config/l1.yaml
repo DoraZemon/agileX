@@ -1,0 +1,32 @@
+# L1 识别参数（方块 50 mm，红 / 绿 / 黄；卡纸 200 mm，同三色）。
+# 单位 m。HSV 用 OpenCV 尺度：H 0-180，S / V 0-255；hmin > hmax 表示跨 180（红色）。
+# 现场灯光下必须重调颜色：python3 -m piper_vision l1 --image ... --hsv 看像素 HSV。
+
+colors:
+  red:    [[[0, 90, 60], [8, 255, 255]], [[170, 90, 60], [180, 255, 255]]]
+  yellow: [[[18, 90, 80], [34, 255, 255]]]
+  green:  [[[35, 60, 40], [85, 255, 255]]]
+
+cube_size: 0.050           # 方块边长（规则 50 ± 2 mm）
+size_tol: 0.015            # 测量边长 / 高度与 cube_size 差超过这个就降分并报警告
+min_height: 0.020          # 高于桌面这么多才算方块
+max_height: 0.090          # 超过这个当作别的东西（手、相机支架）
+top_band: 0.012            # 顶面点：离最高点不超过这个
+card_size: 0.200           # 卡纸边长
+card_size_tol: 0.050
+card_max_height: 0.012     # 卡纸点离桌面的最大高度
+min_pixels: 80             # 连通域最少像素
+min_color_fraction: 0.5
+
+# 桌面高度（基座坐标 z）。null = 每帧从深度拟合。没有深度时必须给。
+table_z: null
+fit_table: true
+table_max_tilt_deg: 15.0
+table_inlier_m: 0.006
+depth_min: 0.15
+depth_max: 2.5
+
+# 只在这个基座 XY 多边形里找方块和卡纸（m）；null = 整张图
+roi_polygon: null
+morph_kernel: 5
+seed: 0

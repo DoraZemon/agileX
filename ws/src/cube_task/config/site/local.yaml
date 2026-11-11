@@ -1,0 +1,7 @@
+# 现场配置，最后合并，覆盖 default.yaml / poses.yaml / colors.yaml / tasks.yaml 的同名键。
+# 只写和默认值不同的项；其他项（CAN 口、速度、TCP、夹爪 100 mm、相机话题）用 default.yaml。
+# 模板见 config/examples/local.example.yaml（注意其中 max_width 0.070 是旧夹爪，不要照抄）。
+# 仿真工具只有加 --site 才读这个文件；真机直接读。
+perception:
+  backend: l1_new              # L1 用 piper_vision 的识别；改成 pipeline 回到原方法
+  l1_block_size: 0.050         # L1 方块边长 50 mm（规则 ±2 mm）
