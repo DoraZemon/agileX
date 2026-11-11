@@ -2,8 +2,8 @@
 Motion-control entry point: drive the arm without the timed competition loop.
 
     python3 -m cube_task motion_ctl status                      # read-only arm state
-    python3 -m cube_task motion_ctl pick --label cube_red --xyz 0.30 0.05 0.05 ...
-    python3 -m cube_task motion_ctl vision --label cube_red     # camera -> detection -> pick
+    python3 -m cube_task motion_ctl pick --label red --xyz 0.30 0.05 0.05 ...
+    python3 -m cube_task motion_ctl vision --label red          # camera -> detection -> pick
     python3 -m cube_task motion_ctl gripper --width 0.08
     python3 -m cube_task motion_ctl joints --joint 1 --delta 0.05   # small joint jog
     python3 -m cube_task motion_ctl moveit [--execute]          # RViz / MoveIt bridge
@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser('status', parents=[parent], help='connect read-only and print the arm state')
 
     pk = sub.add_parser('pick', parents=[parent], help='pick one hand-typed base-frame target')
-    pk.add_argument('--label', required=True, help='class label, e.g. cube_red (selects the zone)')
+    pk.add_argument('--label', required=True, help='class label, e.g. red (selects the zone)')
     pk.add_argument('--xyz', type=float, nargs=3, required=True, metavar=('X', 'Y', 'TOP_Z'),
                     help='target top-face centre in the robot base frame (m)')
     pk.add_argument('--size', type=float, nargs=3, default=(0.05, 0.05, 0.05),

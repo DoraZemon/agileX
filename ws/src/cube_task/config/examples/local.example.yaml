@@ -7,7 +7,7 @@ robot:
   speed_percent: 30            # 默认速度 %；空跑和整轮通过后再提高
   tcp_offset: [0.0, 0.0, 0.140, 0.0, 0.0, 0.0]   # 法兰 -> 闭合指尖中心 [x y z roll pitch yaw]，m / rad
   gripper:
-    max_width: 0.070           # 标准夹爪 0.070；100 mm 新夹爪 0.100
+    max_width: 0.100           # 100 mm 夹爪；现场全开夹爪核对读数
 camera:
   mount: eye_in_hand           # 比赛只有腕端相机（答疑 Q6）。要和外参文件一致
   extrinsics_file: config/site/extrinsics.yaml

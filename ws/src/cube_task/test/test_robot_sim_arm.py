@@ -150,7 +150,7 @@ def test_close_on_nothing_reads_commanded_width():
 
 
 def test_width_is_clipped_and_validated():
-    cfg, clock, arm = _make()
+    cfg, clock, arm = _make(robot__gripper__max_width=0.07)
     assert arm.gripper(0.5).width == pytest.approx(0.07)
     assert arm.gripper(-1.0).width == 0.0
     assert arm.gripper(float('nan')).error == 'fault'

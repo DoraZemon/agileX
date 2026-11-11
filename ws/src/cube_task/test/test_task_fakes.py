@@ -29,6 +29,7 @@ def make_cfg(task='L1', **overrides):
     cfg.set('robot.backend', 'sim')
     cfg.set('robot.poses.observe_joints', [0.0, 0.3, -0.5, 0.0, 0.6, 0.0])
     cfg.set('camera.mount', 'eye_to_hand')
+    cfg.set('robot.gripper.max_width', 0.07)      # FakeArm's stroke
     cfg.set('tasks.L1.labels', ['red', 'green', 'blue'])
     cfg.set('tasks.L1.class_to_zone', {'red': 'zone_red', 'green': 'zone_green',
                                        'blue': 'zone_blue'})
