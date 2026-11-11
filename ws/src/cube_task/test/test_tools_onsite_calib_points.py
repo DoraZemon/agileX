@@ -486,7 +486,8 @@ def _run(tmp_path, args, answers, name='run'):
     out = io.StringIO()
     fn = _scripted(answers)
     ui = Ui(headless=True, input_fn=fn, output=out, preview_dir=str(tmp_path / name))
-    code = cp.main(['--mode', 'sim', '--headless', '--log-dir', str(tmp_path)] + args, ui=ui)
+    code = cp.main(['--mode', 'sim', '--mount', 'eye_to_hand', '--headless', '--log-dir',
+                    str(tmp_path)] + args, ui=ui)
     return code, out.getvalue(), fn
 
 
@@ -655,7 +656,7 @@ def test_main_real_mode_prompts_against_simulated_hardware(tmp_path, monkeypatch
     out = io.StringIO()
     ui = Ui(headless=True, input_fn=operator, output=out, preview_dir=str(tmp_path / 'p'))
     code = cp.main(['--points', '4', '--frames', '2', '--headless', '--log-dir', str(tmp_path),
-                    '--site-dir', str(tmp_path / 'site')], ui=ui)
+                    '--mount', 'eye_to_hand', '--site-dir', str(tmp_path / 'site')], ui=ui)
     text = out.getvalue()
     assert code == 0, text
     assert 'removed point #2' in text and 'point #3 cancelled' in text
@@ -703,7 +704,7 @@ def test_main_real_mode_window_keys(tmp_path, monkeypatch):
     out = io.StringIO()
     ui = _WindowUi(keys, {'w = write': ['w']}, out)
     code = cp.main(['--points', '4', '--frames', '2', '--log-dir', str(tmp_path),
-                    '--site-dir', str(tmp_path / 'site')], ui=ui)
+                    '--mount', 'eye_to_hand', '--site-dir', str(tmp_path / 'site')], ui=ui)
     text = out.getvalue()
     assert code == 0, text
     assert cp.WINDOW_PLACE in text and 'Enter or space in the preview window' in text

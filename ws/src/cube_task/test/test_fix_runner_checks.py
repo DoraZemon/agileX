@@ -7,7 +7,8 @@ from cube_task.core.clock import SimClock
 from cube_task.core.types import GripperResult, PerceptionResult, TablePlane
 from cube_task.core.zones import parse_zone, parse_zones
 from cube_task.perception.grasp import (GraspPlanner, held_offset_of, PlacePlanner,
-                                        release_slots, table_floor_z, table_z_warning)
+                                        release_slots, SLOT_MARGIN, table_floor_z,
+                                        table_z_warning)
 from cube_task.task.selfcheck import self_check
 from cube_task.task.skills import PickPlaceSkill
 from cube_task.tools import calib_verify as cv
@@ -191,23 +192,24 @@ def test_release_slots_fit_the_footprint_inside_the_zone():
     z = _bin()
     slots = release_slots(z, 0.065)
     assert len(slots) == 4
-    h = (0.14 - 0.065) / 2.0 - 0.015
+    h = (0.14 - 0.065) / 2.0 - SLOT_MARGIN
     assert np.allclose(slots[0], [0.25 - h, 0.30 - h])
     assert np.allclose(slots[1], [0.25 + h, 0.30 + h])
     assert release_slots(z, 0.13) == [(0.25, 0.30)]                    # too big: center only
     zr = _bin(yaw=np.pi / 2)
     for x, y in release_slots(zr, 0.065):
-        assert zr.contains_xy(x, y, margin=-(0.065 / 2.0 + 0.015) + 1e-9)
+        assert zr.contains_xy(x, y, margin=-(0.065 / 2.0 + SLOT_MARGIN) + 1e-9)
     long_zone = parse_zone('mat', {'center': [0.25, 0.30, 0.0], 'size': [0.20, 0.08]})
     assert len(release_slots(long_zone, 0.05)) == 2
 
 
 def test_place_plan_spreads_and_clears_objects_already_in_the_zone():
     cfg = make_cfg('L2')
+    cfg.set('place.slot_margin', 0.015)          # room for the slot grid in a 0.14 m zone
     pp = PlacePlanner(cfg)
     z = _bin(wall=0.0)
     first = pp.plan(z, 0.03, 0.2, footprint=0.065, center_first=False)
-    assert np.allclose(first.T_release[:2, 3], release_slots(z, 0.065)[0])
+    assert np.allclose(first.T_release[:2, 3], release_slots(z, 0.065, 0.015)[0])
     base = pp.plan(z, 0.03, 0.2)                                       # old behavior: center
     assert np.allclose(base.T_release[:2, 3], [0.25, 0.30])
     assert first.T_release[2, 3] == pytest.approx(base.T_release[2, 3])
@@ -215,7 +217,7 @@ def test_place_plan_spreads_and_clears_objects_already_in_the_zone():
     second = pp.plan(z, 0.03, 0.2, footprint=0.065, occupied=occ, center_first=False)
     # No slot of a 14 cm bin is fully clear of a 65 mm object: the one with the most
     # clearance (the diagonal opposite) wins.
-    assert np.allclose(second.T_release[:2, 3], release_slots(z, 0.065)[1])
+    assert np.allclose(second.T_release[:2, 3], release_slots(z, 0.065, 0.015)[1])
     occ_small = [(occ[0][0], occ[0][1], 0.05, 0.08)]
     third = pp.plan(z, 0.03, 0.2, footprint=0.05, occupied=occ_small, center_first=False)
     d = np.linalg.norm(third.T_release[:2, 3] - first.T_release[:2, 3])

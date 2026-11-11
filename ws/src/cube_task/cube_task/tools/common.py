@@ -43,8 +43,8 @@ def add_common_args(p: argparse.ArgumentParser, task_required: bool = False,
     p.add_argument('--site', action='store_true',
                    help='sim mode: also merge config/site overlays (ignored otherwise)')
     p.add_argument('--seed', type=int, default=0, help='sim scenario seed')
-    p.add_argument('--mount', choices=('eye_to_hand', 'eye_in_hand'), default='eye_to_hand',
-                   help='sim camera mount')
+    p.add_argument('--mount', choices=('eye_to_hand', 'eye_in_hand'), default='eye_in_hand',
+                   help='sim camera mount (the competition has only the wrist camera)')
     p.add_argument('--difficulty', choices=('normal', 'hard'), default='normal',
                    help='sim scenario difficulty')
     p.add_argument('--extrinsics-error', type=float, nargs=2, default=(0.0, 0.0),

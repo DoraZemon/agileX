@@ -6,8 +6,9 @@ refuse when the gripper holds an object -> straight up
 when the TCP starts below the transit height -> observe pose + open gripper ->
 eye_in_hand real runs: pick area visible from the observe pose -> operator start
 (Enter typed before the prompt does not count) -> timed loop of observe / select
-/ plan / pick-place. Fixed cameras capture in place after a successful retreat;
-wrist cameras return to the observe pose. Returning there at the end is optional.
+/ plan / pick-place. The wrist camera (eye_in_hand, the only camera of the
+competition) captures at an observe pose after every pick. Returning there at the end
+is optional.
 Several wrist observe poses (robot.poses.observe_views, task/views.py): every view
 is scanned once, the views' detections are merged, the target's view is captured
 again before each pick when the arm moved since, and all views again when no
@@ -218,7 +219,6 @@ class TaskRunner:
         self.min_time = float(cfg.get(r + 'min_time_for_pick_s', 12.0))
         self.retry_s = float(cfg.get(r + 'observe_retry_s', 0.5))
         self.return_home = bool(cfg.get(r + 'return_home_at_end', False))
-        self.return_to_observe = bool(cfg.get(r + 'return_to_observe_after_pick', False))
         self.match_dist = float(cfg.get('perception.tracking.match_dist_m', 0.03))
         self.n_avg = int(cfg.get('camera.frames_to_average', 3))
         self.settle_s = float(cfg.get('camera.settle_s', 0.4))
@@ -260,7 +260,6 @@ class TaskRunner:
         self._table_warned = False
         self._at_observe = False
         self._at_view = 0
-        self._capture_in_place = False
         self._t_arrived: Optional[float] = None
         self._last_stamp: Optional[float] = None
         self._obs = 0
@@ -532,7 +531,6 @@ class TaskRunner:
 
     def _go_observe(self, view: int = 0) -> Tuple[bool, str]:
         """Move to observe view `view` (taught joints, else observe_tcp); (ok, error)."""
-        self._capture_in_place = False
         qj = self.views[view] if self.views else None
         if qj is not None:
             m = self.arm.move_joints([float(v) for v in qj])
@@ -558,13 +556,13 @@ class TaskRunner:
     # ------------------------------------------------------------ observation
     def _observe(self, view: int = 0) -> Tuple[str, Optional[PerceptionResult], Any]:
         """
-        Capture at observe view `view` or after a successful fixed-camera retreat.
+        Capture at observe view `view` (moving there first when the arm is elsewhere).
 
         Returns (status, result, frame) with status 'ok', 'failed' (no usable
         frame, no flange pose, perception error or a first failed observe move;
         the reason is in _last_obs_failure), 'fault' or 'aborted'.
         """
-        if not (self._at_observe and self._at_view == view) and not self._capture_in_place:
+        if not (self._at_observe and self._at_view == view):
             ok, err = self._go_observe(view)
             if not ok:
                 if err == 'aborted' or self._aborted():
@@ -626,16 +624,7 @@ class TaskRunner:
         self._fail_streak += 1
         self._last_obs_failure = reason
         self._event('observation', ok=False, reason=reason, failures=self._fail_streak, **fields)
-        self._retry_from_observe(reason)
         return 'failed', None, None
-
-    def _retry_from_observe(self, reason: str) -> bool:
-        """Retry an unusable in-place view once from the taught observe pose."""
-        if not self._capture_in_place:
-            return False
-        self._capture_in_place = False
-        self._event('decision', action='observe_fallback', reason=reason)
-        return True
 
     def _pause_after_failure(self) -> None:
         """Wait before the next try after a failed observation (longer after many)."""
@@ -885,16 +874,11 @@ class TaskRunner:
                     remaining=round(self._remaining(), 2))
         res = self.skill.execute(gp, pp, dry_run=self.dry_run)
         self._at_observe = False
-        self._capture_in_place = False
         if res.detail.get('fault') or res.detail.get('holding'):
             # A held object that could not be put down is a fault as well.
             self.fault_detail = 'pick %s at stage %s: %s' % (res.label, res.stage, res.error)
             return ('aborted' if self._aborted() else 'fault'), res
         if res.ok:
-            if (self.mount == 'eye_to_hand' and not self.return_to_observe
-                    and not res.detail.get('retreat_failed')):
-                self._capture_in_place = True
-                self._t_arrived = self.clock.now()
             self._tracks.remove(track)
             x_rel, y_rel = (float(v) for v in pp.T_release[:2, 3])
             h = float(det.height) if det.height is not None and math.isfinite(
@@ -1112,8 +1096,6 @@ class TaskRunner:
             target = self._select(self._candidates(result), valid)
             self._save_image(frame, result, target)
             if target is None:
-                if self._retry_from_observe('no pickable target in the current view'):
-                    continue
                 empty += 1
                 self._event('decision', action='nothing_to_pick', empty=empty)
                 if empty >= self.max_empty:

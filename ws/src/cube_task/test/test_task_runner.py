@@ -36,8 +36,8 @@ def test_l1_places_three_within_limit():
     assert 0 < rep.elapsed < 180
     assert rig.world.placed == {'zone_red': ['red'], 'zone_green': ['green'],
                                 'zone_blue': ['blue']}
-    # Only the initial observe move: fresh fixed-camera views between picks, no home.
-    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 1
+    # One observe move per pick (the wrist camera captures there), no return home.
+    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 3
     assert rig.arm.commands[-1][0] == 'move_tcp'
     kinds = [c[0] for c in rig.arm.commands]
     first_tcp = kinds.index('move_tcp')
@@ -195,14 +195,6 @@ def test_real_mode_refuses_when_self_check_fails():
     assert rep.stop_reason == 'self_check' and rig.arm.commands == []
 
 
-def test_real_mode_runs_when_self_check_passes():
-    rig = Rig('L1')
-    _l1(rig)
-    rig.cfg.set('robot.backend', 'pyagxarm')
-    rep = rig.runner().run()
-    assert rep.ok and rep.placed == 3, rig.logger.kinds('self_check')
-
-
 def test_unreachable_target_is_blacklisted_without_motion():
     rig = Rig('L1')
     _l1(rig)
@@ -237,7 +229,6 @@ def test_bad_frames_are_retried_until_the_deadline(mode):
 
 def test_observe_move_failure_is_a_fault():
     rig = Rig('L1')
-    rig.cfg.set('runner.return_to_observe_after_pick', True)
     _l1(rig)
     rig.arm.fail_fn = lambda kind, T, lin, idx: (MotionResult(ok=False, error='timeout')
                                                  if kind == 'move_joints' and idx > 0

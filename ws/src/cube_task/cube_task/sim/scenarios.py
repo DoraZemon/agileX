@@ -838,16 +838,24 @@ def official_wrist_views(layout: str = 'A'
     return tuple(out)
 
 
-def official_visible(obj: SimObject, layout: str = 'A') -> bool:
-    """Return True when obj is whole in the fixed camera and in at least one wrist view."""
+def official_visible(obj: SimObject, layout: str = 'A', any_wrist_view: bool = True) -> bool:
+    """
+    Return True when obj is whole in the fixed camera and in the wrist camera.
+
+    any_wrist_view True (L2: objects may lie outside one view): in at least one of
+    the wrist observe views; False (L1: objects inside the camera view): in the
+    main wrist observe view (official_observe).
+    """
     h = DEFAULT_INTRINSICS['height']
     fixed = ((inv_T(official_T_base_camera(layout)), h - VIEW_MARGIN_PX),)
 
     def seen(views) -> bool:
         return fully_visible(obj, views) or fully_visible(obj, views, exact=True)
 
+    wrist = ([T for _q, T in official_wrist_views(layout)] if any_wrist_view
+             else [official_observe(layout)[1]])
     return seen(fixed) and any(seen(((inv_T(np.array(T)), h - EYE_IN_HAND_BOTTOM_PX),))
-                               for _q, T in official_wrist_views(layout))
+                               for T in wrist)
 
 
 @functools.lru_cache(maxsize=4)
@@ -1118,7 +1126,7 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
     hard = difficulty == 'hard'
 
     def visible(obj: SimObject) -> bool:
-        return official_visible(obj, layout)
+        return official_visible(obj, layout, any_wrist_view=task == 'L2')
 
     zones = official_zones(layout)
     info: Dict[str, Any] = {'task': task, 'seed': int(seed), 'mount': mount,

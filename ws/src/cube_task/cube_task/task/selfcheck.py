@@ -529,6 +529,10 @@ def self_check(cfg, task: str, arm=None, camera=None, mode: str = 'real',
     ext = _check_extrinsics(cfg, rep, extrinsics)
     _check_assets(cfg, task, rep)
     if mode == 'real':
+        if (cfg.get('robot.backend', None) == 'pyagxarm'
+                and cfg.get('camera.mount', None) != 'eye_in_hand'):
+            rep.fail('camera.mount is %r: the competition camera is the wrist camera, set '
+                     'camera.mount: eye_in_hand' % (cfg.get('camera.mount', None),))
         if arm is None:
             rep.warn('no arm given: arm checks skipped')
         else:

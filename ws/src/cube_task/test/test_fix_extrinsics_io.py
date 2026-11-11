@@ -140,8 +140,9 @@ def test_calib_points_writes_a_loadable_file_for_json_and_npy(tmp_path, name, wr
     out = io.StringIO()
     ui = Ui(headless=True, input_fn=_scripted({'w = write': ['w']}), output=out,
             preview_dir=str(tmp_path / 'preview'))
-    code = cp.main(['--mode', 'sim', '--headless', '--log-dir', str(tmp_path),
-                    '--set', 'camera.extrinsics_file=config/site/%s' % name], ui=ui)
+    code = cp.main(['--mode', 'sim', '--mount', 'eye_to_hand', '--headless', '--log-dir',
+                    str(tmp_path), '--set', 'camera.extrinsics_file=config/site/%s' % name],
+                   ui=ui)
     text = out.getvalue()
     assert code == 0, text
     path = tmp_path / 'sim_site' / written

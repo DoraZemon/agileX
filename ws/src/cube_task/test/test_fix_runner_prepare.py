@@ -118,6 +118,20 @@ def test_real_eye_in_hand_run_checks_the_view_at_the_observe_pose():
     assert len(view) == 1 and view[0]['ok']
 
 
+def test_real_arm_runs_with_the_wrist_camera_and_refuses_a_fixed_one():
+    rig = _eih_rig(LOOK_DOWN)
+    rig.cfg.set('robot.backend', 'pyagxarm')
+    rep = rig.runner(mode='real').run()
+    assert rep.ok and rep.placed == 1, rig.logger.kinds('self_check')
+    rig = Rig('L1')
+    rig.cfg.set('robot.backend', 'pyagxarm')
+    rig.world.add(make_det('red', 0.25, -0.10))
+    rep = rig.runner(mode='real').run()
+    assert rep.stop_reason == 'self_check' and not rig.arm.commands
+    msgs = rig.logger.kinds('self_check')[0]['messages']
+    assert any(m.startswith('[FAIL]') and 'wrist camera' in m for m in msgs)
+
+
 def test_real_eye_in_hand_view_check_survives_one_missing_frame():
     rig = _eih_rig(LOOK_DOWN)
 

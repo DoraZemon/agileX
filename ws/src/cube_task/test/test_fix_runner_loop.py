@@ -23,7 +23,7 @@ def _picks(rig):
     return [e for e in rig.logger.kinds('decision') if e['action'] == 'pick']
 
 
-def test_continuous_picks_use_fresh_geometry_after_the_retreat():
+def test_every_pick_uses_fresh_geometry_from_the_observe_pose():
     rig = Rig('L1')
     objects = _l1(rig)
     releases = []
@@ -41,43 +41,12 @@ def test_continuous_picks_use_fresh_geometry_after_the_retreat():
     observations = rig.logger.kinds('observation')
     assert observations[1]['stamp'] > (releases[0] + rig.arm.move_time
                                        + rig.cfg.get('camera.settle_s'))
-    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 1
+    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 3
 
 
-@pytest.mark.parametrize('failure', ['empty', 'camera', 'perception'])
-def test_bad_view_after_place_returns_to_observe_and_continues(failure):
-    rig = Rig('L1')
-    _l1(rig)
-    original_process = rig.perception.process
-
-    def process(frame, T_base_camera, zones=None):
-        res = original_process(frame, T_base_camera, zones)
-        if len(rig.perception.calls) == 2:
-            if failure == 'empty':
-                res.detections = []
-            elif failure == 'perception':
-                raise RuntimeError('view unavailable')
-        return res
-
-    rig.perception.process = process
-    if failure == 'camera':
-        def on_place(zone, label):
-            if label == 'red':
-                rig.camera.none_frames = 1
-        rig.world.on_place = on_place
-    rep = rig.runner().run()
-    assert rep.ok and rep.placed == 3
-    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 2
-    assert len([e for e in rig.logger.kinds('decision')
-                if e['action'] == 'observe_fallback']) == 1
-
-
-@pytest.mark.parametrize('after_pick,at_end,moves', [
-    (True, False, 3), (False, True, 2), (True, True, 4),
-])
-def test_observe_return_options(after_pick, at_end, moves):
-    rig = Rig('L1', runner__return_to_observe_after_pick=after_pick,
-              runner__return_home_at_end=at_end)
+@pytest.mark.parametrize('at_end,moves', [(False, 3), (True, 4)])
+def test_observe_return_options(at_end, moves):
+    rig = Rig('L1', runner__return_home_at_end=at_end)
     _l1(rig)
     rep = rig.runner().run()
     assert rep.ok and rep.placed == 3
