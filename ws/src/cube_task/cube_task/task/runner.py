@@ -8,6 +8,10 @@ eye_in_hand real runs: pick area visible from the observe pose -> operator start
 (Enter typed before the prompt does not count) -> timed loop of observe / select
 / plan / pick-place. Fixed cameras capture in place after a successful retreat;
 wrist cameras return to the observe pose. Returning there at the end is optional.
+Several wrist observe poses (robot.poses.observe_views, task/views.py): every view
+is scanned once, the views' detections are merged, the target's view is captured
+again before each pick when the arm moved since, and all views again when no
+target is left.
 A fault stops the run at once with
 no further motion; the runner never restarts or resumes by itself (one
 referee-approved restart per round is a human decision). Camera or perception
@@ -18,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -33,6 +37,8 @@ from .operator import Operator
 from .selection import is_blacklisted, select_target
 from .selfcheck import observe_tcp_pose, self_check
 from .skills import PickPlaceSkill, is_fault_motion_error
+from .views import (drop_near, MERGE_DIST, merge_view_detections, nearest_view, observe_views,
+                    tag_view, view_of)
 
 _LOG = logging.getLogger('cube_task.task.runner')
 
@@ -204,6 +210,9 @@ class TaskRunner:
         self.frame_timeout = float(cfg.get('camera.frame_timeout_s', 2.0))
         self.max_frame_age = float(cfg.get('camera.max_frame_age_s', 1.0))
         self.mount = str(cfg.get('camera.mount', 'eye_to_hand'))
+        self.views = observe_views(cfg)
+        self.multi_view = self.mount == 'eye_in_hand' and len(self.views) > 1
+        self.view_merge = float(cfg.get('runner.view_merge_dist_m', MERGE_DIST))
         self.left_axis = np.asarray(cfg.get('tasks.L3.left_axis', [0.0, 1.0]), dtype=float)[:2]
         self.save_images = bool(cfg.get('logging.save_images', True)) and bool(
             cfg.get('logging.image_every_observation', True))
@@ -234,6 +243,7 @@ class TaskRunner:
         self._last_obs_failure = ''
         self._table_warned = False
         self._at_observe = False
+        self._at_view = 0
         self._capture_in_place = False
         self._t_arrived: Optional[float] = None
         self._last_stamp: Optional[float] = None
@@ -364,6 +374,8 @@ class TaskRunner:
             if not ok_view:
                 return self._refuse(rep, 'fault',
                                     'pick area not visible from the observe pose: ' + msg)
+        if self.mount == 'eye_in_hand':
+            self._report_view_coverage()
         if self.start_on_enter:
             # Only an Enter typed after the prompt starts the clock.
             started = self.operator.wait_start(discard_earlier=True)
@@ -536,10 +548,10 @@ class TaskRunner:
             return 'fault'
         return None
 
-    def _go_observe(self) -> Tuple[bool, str]:
-        """Move to the observe pose (taught joints, else observe_tcp); (ok, error)."""
+    def _go_observe(self, view: int = 0) -> Tuple[bool, str]:
+        """Move to observe view `view` (taught joints, else observe_tcp); (ok, error)."""
         self._capture_in_place = False
-        qj = self.cfg.get('robot.poses.observe_joints', None)
+        qj = self.views[view] if self.views else None
         if qj is not None:
             m = self.arm.move_joints([float(v) for v in qj])
         else:
@@ -551,25 +563,27 @@ class TaskRunner:
             if T2 is None:
                 return False, 'rejected'
             m = self.arm.move_tcp(T2, linear=False)
-        self._event('observe_move', ok=m.ok, error=m.error, duration=round(m.duration, 3))
+        self._event('observe_move', ok=m.ok, error=m.error, duration=round(m.duration, 3),
+                    view=view)
         if m.ok:
             self._at_observe = True
+            self._at_view = view
             self._t_arrived = self.clock.now()
             return True, ''
         self._at_observe = False
         return False, m.error or 'unknown'
 
     # ------------------------------------------------------------ observation
-    def _observe(self) -> Tuple[str, Optional[PerceptionResult], Any]:
+    def _observe(self, view: int = 0) -> Tuple[str, Optional[PerceptionResult], Any]:
         """
-        Capture at the observe pose or after a successful fixed-camera retreat.
+        Capture at observe view `view` or after a successful fixed-camera retreat.
 
         Returns (status, result, frame) with status 'ok', 'failed' (no usable
         frame, no flange pose, perception error or a first failed observe move;
         the reason is in _last_obs_failure), 'fault' or 'aborted'.
         """
-        if not self._at_observe and not self._capture_in_place:
-            ok, err = self._go_observe()
+        if not (self._at_observe and self._at_view == view) and not self._capture_in_place:
+            ok, err = self._go_observe(view)
             if not ok:
                 if err == 'aborted' or self._aborted():
                     return 'aborted', None, None
@@ -682,9 +696,12 @@ class TaskRunner:
 
     def _candidates(self, result: PerceptionResult) -> List[Detection]:
         """Return valid, classified, mapped detections that pass the target filter."""
+        return self._candidates_from(result.valid_detections())
+
+    def _candidates_from(self, dets: Sequence[Detection]) -> List[Detection]:
         out: List[Detection] = []
         skipped = []
-        for d in result.valid_detections():
+        for d in dets:
             zone = self.class_to_zone.get(d.label)
             if d.label in ('', 'unknown'):
                 why = 'unknown_label'
@@ -1063,6 +1080,9 @@ class TaskRunner:
 
     # ------------------------------------------------------------- L1 / L2
     def _loop_sort(self, rep: TaskReport) -> None:
+        if self.multi_view:
+            self._loop_sort_views(rep)
+            return
         empty = 0
         while True:
             if rep.placed >= self.required:
@@ -1101,6 +1121,109 @@ class TaskRunner:
             if stop is not None:
                 rep.stop_reason = stop
                 return
+
+    def _joints_now(self) -> Optional[List[float]]:
+        try:
+            s = self.arm.get_joints()
+        except Exception:  # noqa: B902 - unknown joints: views in taught order
+            return None
+        return None if s is None or s.value is None else [float(v) for v in s.value]
+
+    def _scan_view(self, view: int, scene: Dict[int, List[Detection]], stale: Set[int],
+                   seen: Set[int]) -> str:
+        """Capture observe view `view` into scene; return the _observe status."""
+        status, result, frame = self._observe(view)
+        if status != 'ok':
+            return status
+        scene[view] = tag_view(result.valid_detections(), view)
+        stale.discard(view)
+        seen.add(view)
+        self._event('decision', action='view_scanned', view=view, n=len(scene[view]),
+                    labels=[d.label for d in scene[view]])
+        self._save_image(frame, result, None)
+        return 'ok'
+
+    def _loop_sort_views(self, rep: TaskReport) -> None:
+        """
+        L1 / L2 over several wrist observe views (robot.poses.observe_views).
+
+        Every view is scanned once before the first pick (a long object in a
+        later view must be known before its zone-mates). The target is chosen
+        over the merged detections of all views; when its view was captured
+        before the arm last moved, that view is captured again first. A pick
+        makes every view stale and drops the picked object; with no target
+        left the stale views are scanned, and max_empty fresh full scans
+        without a target end the round.
+        """
+        n = len(self.views)
+        scene: Dict[int, List[Detection]] = {}
+        stale: Set[int] = set(range(n))
+        seen: Set[int] = set()
+        empty = 0
+        while True:
+            if rep.placed >= self.required:
+                rep.stop_reason = 'done'
+                return
+            stop = self._stop_check()
+            if stop is not None:
+                rep.stop_reason = stop
+                return
+            merged = merge_view_detections(scene, stale, self.view_merge)
+            target = None
+            if len(seen) == n:
+                target = self._select(self._candidates_from(merged), merged)
+            if target is None or view_of(target) in stale:
+                if target is not None:
+                    view = view_of(target)
+                elif stale:
+                    todo = (set(range(n)) - seen) or stale
+                    view = nearest_view(self.views, todo, self._joints_now())
+                else:
+                    empty += 1
+                    self._event('decision', action='nothing_to_pick', empty=empty, views=n)
+                    if empty >= self.max_empty:
+                        rep.stop_reason = 'no_targets'
+                        return
+                    stale = set(range(n))
+                    self.clock.sleep(self.retry_s)
+                    continue
+                status = self._scan_view(view, scene, stale, seen)
+                if status in ('fault', 'aborted'):
+                    rep.stop_reason = status
+                    return
+                if status == 'failed':
+                    self._pause_after_failure()
+                continue
+            empty = 0
+            stop, res = self._attempt(target, self.class_to_zone[target.label], rep, merged)
+            if res is not None:
+                rep.picks.append(res)
+                if res.ok:
+                    rep.placed += 1
+                    drop_near(scene, _xy(target), self.view_merge)
+                stale = set(range(n))           # the arm went through the scene
+            else:
+                stale.add(view_of(target))      # not picked: measure it again
+            if stop is not None:
+                rep.stop_reason = stop
+                return
+
+    def _report_view_coverage(self) -> None:
+        """Log how much of the pick area the observe views cover (eye_in_hand, never refuses)."""
+        from .views import coverage_report
+        try:
+            intr = self.camera.intrinsics() if self.camera is not None else None
+            if intr is None or self.ext is None or self.ext.parent_frame != 'flange':
+                return
+            frac, msg = coverage_report(self.cfg, self.views, self.ext.T, intr)
+        except Exception:  # noqa: B902 - diagnostics only
+            _LOG.exception('view coverage check failed')
+            return
+        if frac is None:
+            return
+        (_LOG.info if frac >= 0.95 else _LOG.warning)('%s', msg)
+        self._event('view_coverage', fraction=round(frac, 3), message=msg,
+                    views=len(self.views))
 
     # --------------------------------------------------------------------- L3
     def apply_selector(self, selector: str, dets: Sequence[Detection]) -> Optional[Detection]:

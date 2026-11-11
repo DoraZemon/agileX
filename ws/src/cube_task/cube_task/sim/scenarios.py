@@ -487,13 +487,17 @@ OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
                     'zone_red': (0.17, -0.35)},
           'pick': [[0.12, -0.25], [0.40, -0.25], [0.40, 0.25], [0.12, 0.25]],
           'eye_to_hand': ((0.60, 0.0, 0.50), (0.36, 0.0, 0.0)),
-          'eye_in_hand': (0.0, 0.486, -0.47, 0.0, 1.168, 0.0)},
+          'eye_in_hand': (0.0, 0.486, -0.47, 0.0, 1.168, 0.0),
+          # wrist observe views: eye_in_hand joints with joint1 turned by these (rad), in
+          # scan order (right, middle, left); one view does not cover the pick area
+          'wrist_yaws': (-0.5, 0.0, 0.5), 'wrist_lift': 0.0},
     # B: the three cards in a row in front of the pick area.
     'B': {'cards': {'zone_green': (0.43, 0.205), 'zone_yellow': (0.43, 0.0),
                     'zone_red': (0.43, -0.205)},
           'pick': [[0.16, -0.18], [0.305, -0.23], [0.305, 0.23], [0.16, 0.18]],
           'eye_to_hand': ((0.60, 0.0, 0.50), (0.36, 0.0, 0.0)),
-          'eye_in_hand': (0.0, 0.486, -0.495, 0.0, 1.168, 0.0)},
+          'eye_in_hand': (0.0, 0.486, -0.495, 0.0, 1.168, 0.0),
+          'wrist_yaws': (-0.45, 0.0, 0.45), 'wrist_lift': 0.1},
 }
 
 
@@ -842,6 +846,41 @@ def official_observe(layout: str = 'A'
 
 
 @functools.lru_cache(maxsize=4)
+def official_wrist_views(layout: str = 'A'
+                         ) -> Tuple[Tuple[Tuple[float, ...], Tuple[Tuple[float, ...], ...]], ...]:
+    """
+    Return ((observe joints, T_base_camera), ...) of the wrist observe views of a layout.
+
+    The eye_in_hand joints with joint1 turned by each of the layout's wrist_yaws and
+    joint2 raised by wrist_lift, in scan order (robot.poses.observe_views).
+    """
+    lay = OFFICIAL_LAYOUTS[layout]
+    out = []
+    for yaw in lay.get('wrist_yaws', (0.0,)):
+        q = list(float(v) for v in lay['eye_in_hand'])
+        q[0] += float(yaw)
+        if yaw:
+            q[1] += float(lay.get('wrist_lift', 0.0))
+        if not within_limits(tuple(q), 0.02):
+            raise RuntimeError('layout %s: wrist view %s outside the joint limits' % (layout, q))
+        T = piper_fk(tuple(q)) @ eye_in_hand_T_flange_camera()
+        out.append((tuple(q), tuple(tuple(float(v) for v in row) for row in T)))
+    return tuple(out)
+
+
+def official_visible(obj: SimObject, layout: str = 'A') -> bool:
+    """Return True when obj is whole in the fixed camera and in at least one wrist view."""
+    h = DEFAULT_INTRINSICS['height']
+    fixed = ((inv_T(official_T_base_camera(layout)), h - VIEW_MARGIN_PX),)
+
+    def seen(views) -> bool:
+        return fully_visible(obj, views) or fully_visible(obj, views, exact=True)
+
+    return seen(fixed) and any(seen(((inv_T(np.array(T)), h - EYE_IN_HAND_BOTTOM_PX),))
+                               for _q, T in official_wrist_views(layout))
+
+
+@functools.lru_cache(maxsize=4)
 def official_views(layout: str = 'A') -> Tuple[Tuple[np.ndarray, int], ...]:
     """Return (T_camera_base, max image row) of both mounts' observe views of a layout."""
     eih = np.array(official_observe(layout)[1])
@@ -1107,10 +1146,9 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
     lay = OFFICIAL_LAYOUTS[layout]
     polygon = np.array(lay['pick'], dtype=float)
     hard = difficulty == 'hard'
-    views = official_views(layout)
 
     def visible(obj: SimObject) -> bool:
-        return fully_visible(obj, views) or fully_visible(obj, views, exact=True)
+        return official_visible(obj, layout)
 
     zones = official_zones(layout)
     info: Dict[str, Any] = {'task': task, 'seed': int(seed), 'mount': mount,
@@ -1169,6 +1207,7 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
         info['T_flange_camera'] = eye_in_hand_T_flange_camera()
         info['T_base_camera_observe'] = np.array(T_obs)
         info['observe_joints'] = list(q)
+        info['observe_views'] = [list(v) for v, _T in official_wrist_views(layout)]
     return world, info
 
 
@@ -1514,6 +1553,8 @@ def scenario_config_overlay(info: Dict[str, Any],
         'camera': {'backend': 'sim', 'mount': mount,
                    'extrinsics_inline': {'mount': mount, 'matrix': _as_list(T_est)}},
         'robot': {'backend': 'sim',
-                  'poses': {'observe_joints': [float(v) for v in info['observe_joints']]}},
+                  'poses': {'observe_joints': [float(v) for v in info['observe_joints']],
+                            'observe_views': [[float(v) for v in q]
+                                              for q in info.get('observe_views', [])]}},
         'sim': sim,
     }

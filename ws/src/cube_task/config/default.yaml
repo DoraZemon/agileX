@@ -65,6 +65,11 @@ robot:
     # Eye-in-hand: a pose looking down at the pick area. SITE: teach these.
     home_joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     observe_joints: null
+    # Eye-in-hand: observe poses scanned when one view does not cover the pick area (L2),
+    # joint lists in scan order; teach_poses key v. Empty = observe_joints only.
+    # Each object must lie whole in at least one view (task/views.py, run_task logs the
+    # coverage at the start).
+    observe_views: []
     # Fallback when observe_joints is null: top-down TCP pose [x y z closing_angle].
     # PiPER reaches a vertical tool only up to TCP z ~0.10 m at r 0.2-0.3 m (0.02 m at r 0.45);
     # higher poses are leaned outward (task/reach.py).
@@ -274,6 +279,7 @@ runner:
   # also falls back there. true restores the return after every pick.
   return_to_observe_after_pick: false
   return_home_at_end: false     # true: return to the observe pose after the round
+  view_merge_dist_m: 0.04      # several observe views: one object if the centers are closer
   dry_run_hover: 0.05          # --dry-run: stay this high above grasp / release poses
 
 sim:

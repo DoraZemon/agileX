@@ -7,6 +7,10 @@ moves it by hand. This tool only reads the arm; it never moves it. Commands:
   o         observe pose: current joints -> robot.poses.observe_joints
             (eye_to_hand: warns when the camera sees the gripper in front of
             the pick polygon)
+  v [clear] observe view (eye_in_hand): append the current joints to
+            robot.poses.observe_views, scanned in this order when one view does not
+            cover the pick area (L2); 'v clear' empties the list. Teach every view,
+            the first one included; each object must lie whole in at least one view
   h         home pose: current joints -> robot.poses.home_joints
   z [name]  zone: touch the zone floor center with the closed fingertips ->
             zones.<name>.center [x, y, floor_z]; then size, wall height and
@@ -63,18 +67,20 @@ _LOG = logging.getLogger('cube_task.tools.teach_poses')
 
 OUT_NAME = 'poses.yaml'
 KEY_OBSERVE = 'robot.poses.observe_joints'
+KEY_VIEWS = 'robot.poses.observe_views'
 KEY_HOME = 'robot.poses.home_joints'
 KEY_POLYGON = 'perception.roi.pick_polygon'
 KEY_TABLE_Z = 'perception.table.expected_z'
 ZONE_KEYS = ('center', 'size', 'yaw', 'wall_height')
 
-HELP = ('o observe, h home, z [name] zone, p pick polygon, d [name] delete zone, l list, '
-        'u undo, w write, q quit')
-WINDOW_HELP = ('keys in the map window: o h z p d l u w q; Enter = type a command in the '
+HELP = ('o observe, v [clear] observe view, h home, z [name] zone, p pick polygon, '
+        'd [name] delete zone, l list, u undo, w write, q quit')
+WINDOW_HELP = ('keys in the map window: o v h z p d l u w q; Enter = type a command in the '
                'terminal (e.g. "z zone_red")')
 ORDER_HINT = ('suggested order: p pick polygon (sets the table z), z for every zone, o observe '
               'pose, h home pose, w write')
-COMMANDS = {'o': 'observe', 'h': 'home', 'z': 'zone', 'p': 'polygon', 'd': 'delete',
+COMMANDS = {'o': 'observe', 'v': 'views', 'h': 'home', 'z': 'zone', 'p': 'polygon',
+            'd': 'delete',
             'l': 'list', 'u': 'undo', 'w': 'write', 'q': 'quit'}
 
 DEFAULT_ZONE_SIZE = (0.10, 0.10)
@@ -704,6 +710,13 @@ def validate_poses(data: Dict[str, Any], kin=None, workspace: Any = None) -> Lis
         why = '' if q is None else joints_problem(q, kin)
         if why:
             problems.append('%s %s' % (key, why))
+    views = get_dotted(data, KEY_VIEWS, None)
+    if views is not None and not isinstance(views, list):
+        problems.append('%s must be a list of joint lists' % KEY_VIEWS)
+    for i, q in enumerate(views if isinstance(views, list) else []):
+        why = joints_problem(q, kin)
+        if why:
+            problems.append('%s[%d] %s' % (KEY_VIEWS, i, why))
     zones = get_dotted(data, 'zones', None)
     if zones is not None and not isinstance(zones, dict):
         problems.append('zones must be a mapping zone name -> {center, size, ...}')
@@ -921,6 +934,12 @@ def format_state(view: Dict[str, Any], changes: Dict[str, Any], tasks_cfg: Any =
     lines = []
     for key, label in ((KEY_OBSERVE, 'observe joints'), (KEY_HOME, 'home joints')):
         lines.append('%s %-15s %s' % (mark(key), label, _fmt_joints(get_dotted(view, key))))
+    views = get_dotted(view, KEY_VIEWS) or []
+    if not views:
+        lines.append('%s %-15s none (observe joints only)' % (mark(KEY_VIEWS), 'observe views'))
+    for i, q in enumerate(views if isinstance(views, list) else []):
+        label = 'observe view %d' % (i + 1)
+        lines.append('%s %-15s %s' % (mark(KEY_VIEWS), label, _fmt_joints(q)))
     poly = get_dotted(view, KEY_POLYGON)
     try:
         ptxt = 'not taught' if poly is None else '%s mm' % ', '.join(fmt_mm(p, 0) for p in poly)
@@ -1226,6 +1245,27 @@ class _Teacher:
                         'the whole pick area from this pose')
         self.record('observe pose', {KEY_OBSERVE: q})
 
+    def cmd_views(self, arg: str = '') -> None:
+        """Append the current joints to the observe views ('clear' empties the list)."""
+        views = [list(q) for q in (self.get(KEY_VIEWS) or [])]
+        if arg.strip().lower() == 'clear':
+            self.record('observe views cleared', {KEY_VIEWS: []})
+            return
+        n = len(views) + 1
+        sim_views = self.info.get('observe_views') or [self.info.get('observe_joints')]
+        got = self.joint_pose('observe view %d' % n,
+                              'Drag the arm to observe view %d: the wrist camera looks down at '
+                              'its part of the pick area (views overlap by at least one object)'
+                              % n,
+                              sim_views[n - 1] if n <= len(sim_views) else None)
+        if got is None:
+            return
+        q, _pose = got
+        views.append([float(v) for v in q])
+        self.ui.say('%d observe view(s); the run starts at view 1 and scans them in this order'
+                    % len(views))
+        self.record('observe view %d' % n, {KEY_VIEWS: views})
+
     def cmd_home(self, _arg: str = '') -> None:
         """Record the current joints as the home pose."""
         home = self.cfg.get(KEY_HOME, None)
@@ -1460,7 +1500,8 @@ class _Teacher:
         cmd = COMMANDS.get(word, word if word in COMMANDS.values() else '')
         if cmd == 'quit':
             return not self.cmd_quit()
-        fn = {'observe': self.cmd_observe, 'home': self.cmd_home, 'zone': self.cmd_zone,
+        fn = {'observe': self.cmd_observe, 'views': self.cmd_views, 'home': self.cmd_home,
+              'zone': self.cmd_zone,
               'polygon': self.cmd_polygon, 'delete': self.cmd_delete, 'list': self.cmd_list,
               'undo': self.cmd_undo, 'write': self.cmd_write}.get(cmd)
         if fn is None:

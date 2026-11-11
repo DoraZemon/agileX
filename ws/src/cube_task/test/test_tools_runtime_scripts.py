@@ -77,8 +77,8 @@ def _log(fake, name):
     return p.read_text().splitlines() if p.exists() else []
 
 
-ONSITE = [ROOT / 'scripts' / n for n in ('arm_check.sh', 'camera_check.sh', 'handeye.sh',
-                                          'capture_dataset.sh')]
+ONSITE = [ROOT / 'scripts' / n
+          for n in ('arm_check.sh', 'camera_check.sh', 'handeye.sh', 'capture_dataset.sh')]
 
 
 def test_scripts_parse():
