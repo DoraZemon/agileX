@@ -897,6 +897,12 @@ def official_model(name: str, label: str, rng: Optional[np.random.Generator] = N
                      mass=OFFICIAL_MASS[label], material='plastic')
 
 
+# Grasp candidates checked per object when deciding graspability; a class and its
+# objects in a scene must use the same count or a class rated graspable alone
+# (e.g. the bell pepper, first grasp after ~50 candidates) fails every scene.
+CLASS_GRASP_CHECKS = 400
+
+
 def _probe(label: str) -> SimObject:
     """Return an isolated object of a class at (0.30, 0) (L1 colors: a 52 mm cube)."""
     if label in OFFICIAL_LABELS:
@@ -913,7 +919,7 @@ def _class_grasp(label: str, max_width: float) -> Tuple[Optional[Tuple[Tuple[str
                                                         str]:
     obj = _probe(label)
     world = SimWorld(objects=[obj])
-    g = find_grasp(world, obj, max_width, max_checks=400)
+    g = find_grasp(world, obj, max_width, max_checks=CLASS_GRASP_CHECKS)
     if g is not None:
         g = dict(g, held_offset=g['z'] - obj.bottom_z(), height=obj.height(),
                  footprint=float(np.max(obj.aabb()[1][:2] - obj.aabb()[0][:2])))
@@ -973,7 +979,7 @@ def _require_grasps(objects: List[SimObject], max_width: float) -> List[SimObjec
     for obj in objects:
         if class_grasp(obj.label, max_width)[0] is None:
             continue
-        if find_grasp(world, obj, max_width) is None:
+        if find_grasp(world, obj, max_width, max_checks=CLASS_GRASP_CHECKS) is None:
             raise RuntimeError('%s has no collision-free grasp' % obj.name)
     return objects
 

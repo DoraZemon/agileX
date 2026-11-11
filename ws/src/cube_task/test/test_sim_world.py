@@ -224,3 +224,20 @@ def test_zone_matches_core_semantics():
         assert z.contains_xy(x, y) == core.contains_xy(x, y)
     assert z.to_config()['center'] == [0.2, 0.3, 0.01]
     assert point_in_polygon(0.2, 0.3, z.corners_xy())
+
+
+def test_zone_fraction_rule_counts_two_thirds_of_the_projection():
+    card = SimZone('zone_green', (0.30, 0.0, 0.0), (0.20, 0.20))
+    rod = SimObject('rod', 'cucumber', 'box', (0.26, 0.04, 0.04), (30, 95, 35), np.eye(4))
+    rule = SimWorld(objects=[rod], zones=[card], min_zone_fraction=2.0 / 3.0)
+    center = SimWorld(objects=[rod], zones=[card])
+    for dx, frac, inside in [(0.0, 0.20 / 0.26, True), (0.07, 0.16 / 0.26, False)]:
+        rod.place_upright(0.30 + dx, 0.0, 0.0, 0.0)
+        assert rule.zone_fraction(rod, card) == pytest.approx(frac, abs=0.02)
+        assert (rule.zone_of(rod) is card) == inside
+        assert center.zone_of(rod) is card
+    rod.place_upright(0.30, 0.0, math.pi / 4.0, 0.0)
+    assert rule.zone_fraction(rod, card) > 0.9
+    assert rule.score({'cucumber': 'zone_green'})['correct'] == 1
+    with pytest.raises(ValueError):
+        SimWorld(min_zone_fraction=0.0)

@@ -55,6 +55,7 @@ GRASP_SLIP_TAPER_DEG = 30.0
 
 WALL_THICKNESS = 0.004       # m, walls of binned zones, outside the zone interior
 SAMPLE_SPACING = 0.0025      # m, surface sample spacing used for grasp geometry
+FOOTPRINT_STEP = 0.004       # m, grid spacing of the footprint area (SimWorld.min_zone_fraction)
 
 
 def _finite_array(value: Any, shape: Tuple[int, ...], what: str) -> np.ndarray:
@@ -431,6 +432,22 @@ class SimObject:
         R, o = self._T[:3, :3], self._T[:3, 3]
         return [(q @ R.T + o)[:, :2] for q in loc]
 
+    def footprint_points(self, step: float = FOOTPRINT_STEP) -> np.ndarray:
+        """Return base-XY grid points (spacing step, m) covering the footprint_polygons union."""
+        polys = self.footprint_polygons()
+        allp = np.vstack(polys)
+        lo, hi = allp.min(axis=0), allp.max(axis=0)
+        xs = np.arange(lo[0] + step / 2.0, hi[0], step)
+        ys = np.arange(lo[1] + step / 2.0, hi[1], step)
+        P = np.stack(np.meshgrid(xs, ys, indexing='ij'), axis=-1).reshape(-1, 2)
+        inside = np.zeros(len(P), dtype=bool)
+        for q in polys:
+            e = np.roll(q, -1, axis=0) - q
+            cross = (e[None, :, 0] * (P[:, None, 1] - q[None, :, 1])
+                     - e[None, :, 1] * (P[:, None, 0] - q[None, :, 0]))
+            inside |= np.all(cross >= 0.0, axis=1) | np.all(cross <= 0.0, axis=1)
+        return P[inside] if inside.any() else self.center_xy()[None, :]
+
     def bounding_sphere(self) -> Tuple[np.ndarray, float]:
         """Return a conservative (center (3,), radius) in the base frame (m)."""
         lo, hi = self.aabb()
@@ -667,6 +684,15 @@ class SimZone:
         """Check containment with core Zone.contains_xy semantics."""
         return self.to_zone().contains_xy(x, y, margin)
 
+    def contains_points(self, P: Any, margin: float = 0.0) -> np.ndarray:
+        """Return a bool per base-XY point (N x 2) with contains_xy semantics."""
+        d = np.asarray(P, dtype=float).reshape(-1, 2) - self.center[:2]
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        lx = c * d[:, 0] + s * d[:, 1]
+        ly = -s * d[:, 0] + c * d[:, 1]
+        return ((np.abs(lx) <= self.size[0] / 2.0 + margin)
+                & (np.abs(ly) <= self.size[1] / 2.0 + margin))
+
     def corners_xy(self, margin: float = 0.0) -> np.ndarray:
         """Return 4x2 corners in base XY (counter-clockwise)."""
         return self.to_zone().corners_xy(margin)
@@ -768,14 +794,23 @@ class SimWorld:
     .gripper_width are the last values given to update_tcp (None before), used
     to draw the gripper. .last_grasp / .last_release describe the last attempt
     (keys ok, reason, object, ...) for logs and tests.
+
+    min_zone_fraction: None (an object is in the zone holding its footprint
+    center) or the share of its vertical projection (0..1] that must lie in
+    a zone for the object to count as placed there (competition rule: 2/3).
     """
 
     def __init__(self, table_z: float = 0.0, objects: Optional[List[SimObject]] = None,
                  zones: Optional[List[SimZone]] = None,
-                 table_color_bgr: Sequence[Any] = (168, 172, 176), seed: int = 0):
+                 table_color_bgr: Sequence[Any] = (168, 172, 176), seed: int = 0,
+                 min_zone_fraction: Optional[float] = None):
         tz = float(table_z)
         if not math.isfinite(tz):
             raise ValueError('table_z must be finite')
+        if min_zone_fraction is not None and not 0.0 < float(min_zone_fraction) <= 1.0:
+            raise ValueError('min_zone_fraction must be in (0, 1], got %r' % (min_zone_fraction,))
+        self.min_zone_fraction = (None if min_zone_fraction is None
+                                  else float(min_zone_fraction))
         self.table_z = tz
         self.objects: List[SimObject] = list(objects or [])
         self.zones: List[SimZone] = list(zones or [])
@@ -825,12 +860,28 @@ class SimWorld:
             return None
         return min(hits, key=lambda z: math.hypot(x - z.center[0], y - z.center[1]))
 
+    def zone_fraction(self, obj: SimObject, zone: SimZone) -> float:
+        """Return the share (0..1) of obj's vertical projection inside zone."""
+        return float(np.mean(zone.contains_points(obj.footprint_points())))
+
     def zone_of(self, obj: SimObject) -> Optional[SimZone]:
-        """Return the zone holding obj (by its footprint center), None if not in one or held."""
+        """
+        Return the zone holding obj, None if not in one or held.
+
+        By its footprint center, or with min_zone_fraction set the zone holding
+        the largest share of its projection if that share reaches it.
+        """
         if obj is self.held:
             return None
-        c = obj.center_xy()
-        return self.zone_at(float(c[0]), float(c[1]))
+        if self.min_zone_fraction is None:
+            c = obj.center_xy()
+            return self.zone_at(float(c[0]), float(c[1]))
+        best: Optional[Tuple[float, SimZone]] = None
+        for z in self.zones:
+            f = self.zone_fraction(obj, z)
+            if f >= self.min_zone_fraction - 1e-9 and (best is None or f > best[0]):
+                best = (f, z)
+        return None if best is None else best[1]
 
     # -------------------------------------------------------------- gripper
     def try_grasp(self, T_base_tcp: Any, open_width: float,
@@ -990,8 +1041,9 @@ class SimWorld:
         The object keeps its footprint center xy and yaw, becomes upright and
         rests on the floor of the zone containing that xy (zone floor z =
         center[2]) or on the table. A partly outside object counts by its
-        center. Returns None when nothing was held or it landed on the table;
-        .last_release tells the two apart.
+        center (by zone_of with min_zone_fraction set). Returns None when
+        nothing was held or it landed on the table; .last_release tells the
+        two apart.
         """
         if T_base_tcp is not None:
             self.update_tcp(T_base_tcp, self.gripper_width or 0.0)
@@ -1008,6 +1060,8 @@ class SimWorld:
         zone = self.zone_at(float(c[0]), float(c[1]))
         floor = zone.floor_z if zone is not None else self.table_z
         obj.place_upright(float(c[0]), float(c[1]), yaw, floor)
+        if self.min_zone_fraction is not None:
+            zone = self.zone_of(obj)
         drop = bottom_before - floor
         self.last_release = {'ok': True, 'reason': '', 'object': obj.name,
                              'zone': None if zone is None else zone.name,
