@@ -81,7 +81,7 @@ bash scripts/mujoco_run.sh run_task --task L2 --mode mujoco --seed 0 \
   --video ~/vision_runs/videos/L2_s0.mp4 --video-speed 2
 ```
 
-脚本默认使用 `~/.venvs/piper-mujoco/bin/python`；有桌面且开启窗口时使用 GLFW，无窗口时使用 EGL，保留显式设置的 `MUJOCO_GL`。首次下载依赖和模型后可离线运行。没有显示环境时 `--viewer` 会跳过窗口，任务仍继续。
+脚本默认使用 `~/.venvs/piper-mujoco/bin/python`，虚拟环境在别处时设置 `MUJOCO_PYTHON`；有桌面且开启窗口时使用 GLFW，无窗口时使用 EGL，保留显式设置的 `MUJOCO_GL`。首次下载依赖和模型后可离线运行。没有显示环境时 `--viewer` 会跳过窗口，任务仍继续。
 
 跑测试（不需要硬件；依赖和测试模型需提前安装）：
 
@@ -116,6 +116,8 @@ python3 -m pytest -q -p no:cacheprovider test/
 | `color_calib` | 否（`--observe` 时动） | 现场灯光下标定方块 HSV → config/site/colors.yaml | 现场流程 |
 | `teach_classes` | 否 | 录果蔬样本，训练 KNN → models/knn_model.npz | 现场流程 |
 | `sim_bench` | 否 | 批量仿真：成功率、用时、放错 | 仿真与测试 |
+| `motion_ctl` | 是（`status` 除外，先确认） | 运控调试：`pick` 按坐标抓、`vision` 按视觉目标抓、`gripper`、`moveit` 接 MoveIt/RViz 拖动；复用比赛的抓放流程和 `SafeArm` | 运控使用说明 |
+| `scripts/moveit_rviz.sh` | 否 | 启动 robot_state_publisher + move_group + RViz（`--no-rviz` 无界面）；配合 `motion_ctl moveit` | 运控使用说明 |
 | `tools/yolo/*` | 否 | YOLO 数据集、训练、导出 ONNX、检查 | docs/yolo.md |
 
 常规工具提供 `--task --mode --config --set --site --seed --mount --difficulty --extrinsics-error
@@ -129,7 +131,7 @@ cube_task/                   包根目录（环境变量 CUBE_TASK_ROOT 可改�
 ├── config/site/             现场文件，覆盖 default.yaml（docs/配置说明.md）
 ├── config/examples/         现场文件模板
 ├── models/                  knn_model.npz、detector.onnx（*.onnx 不进 git，要单独备份）
-├── scripts/                 can_up.sh、start.sh、mujoco_run.sh
+├── scripts/                 can_up.sh、start.sh、mujoco_run.sh、moveit_rviz.sh
 ├── docs/                    文档
 ├── cube_task/core/          配置、坐标变换、外参、日志、时钟、数据类型
 ├── cube_task/camera/        ROS 相机、文件回放、录制、深度对齐
@@ -160,6 +162,7 @@ cube_task/                   包根目录（环境变量 CUBE_TASK_ROOT 可改�
 
 ## 文档
 
+- [docs/运控使用说明.md](docs/运控使用说明.md)：两种运控模式（视觉目标、MoveIt/RViz 拖动）的用法、实机上电顺序、现场参数。
 - [docs/现场流程.md](docs/现场流程.md)：11/12–13 上机和 11/14 比赛的操作清单，出问题时怎么办。**现场先看这个。**
 - [docs/配置说明.md](docs/配置说明.md)：每个配置项、现场文件、外参文件格式。
 - [docs/仿真与测试.md](docs/仿真与测试.md)：仿真验证了什么、没验证什么，测试、sim_bench、回放、读日志。

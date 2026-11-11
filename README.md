@@ -12,6 +12,22 @@
 
 比赛现场统一提供 PiPER、大白深度相机和物料，计算设备由参赛队自备。类别表、区域映射、接口及相机安装方式以正式技术附件为准。L3 当前实现包含指令解析和任务执行，不包含开箱即用的端到端 VLA 模型。
 
+## 当前状态（2026-11-12）
+
+分支 `motion`。以下只写已经验证过的内容，现场前以 [赛前收尾 TODO](schedule/赛前收尾TODO.md) 为准。
+
+| 项目 | 状态 |
+|---|---|
+| 运控（`motion_ctl` + MoveIt/RViz 拖动） | 仿真验证通过；**实机未测**（本机没有 CAN 适配器和大白相机）。见 [运控使用说明](ws/src/cube_task/docs/运控使用说明.md) |
+| L1 仿真（eye_in_hand，normal） | 红、绿、黄 3/3 放对；hard 难度的贴靠方块定位仍有失败用例 |
+| L2 仿真 | **暂不能稳定生成场景**：1000×500 mm 桌面的临时布局下，手腕相机只看得到取物区约 ±0.18 m，6 个物体排不下；弯曲物体（黄瓜、香蕉）的抓取点偏差导致 `grasp_miss`。临时布局 A 的取物区和黄卡纸重叠 1 cm、和绿/红卡纸间隙 0，黄卡纸伸到 x = 0.59 m；按赛方给的实际摆法重调时一并改 |
+| 全量测试 | 47 个失败、1030 通过、106 跳过（11/12，已合并 main；main 上是 51 个失败）。失败集中在官方 L2/L3 场景生成（P0-2 未完成）和依赖它的端到端测试；`test_can_up_missing_interface_mentions_the_official_script` 只在没初始化 `third_party` 子模块时失败 |
+| 默认夹爪宽度 | `robot.gripper.max_width` 已改为 0.100 m（行程 100 mm） |
+| 已按官方文档定下 | 只有 1 台腕端大白（`camera.mount: eye_in_hand`）；内参读 `camera_info`，手眼外参自己用 `calib_points` 标（不提供标定文件）；L1 方块 50 mm、红/绿/黄；3 张 200 × 200 mm 卡纸；物体须完全进入卡纸，黄瓜投影 ≥ 2/3；机械臂经 USB 转 CAN 直连，上电前确认 J1 零点刻度线对齐 |
+| 待现场确认 | TCP 长度（配置 0.140 m，手册 0.1425 m，两处要同步改）、夹爪力单位、相机话题名、取物区与卡纸位置 |
+
+仿真只验证流程，不代表真实相机和物料上的识别精度；颜色标定、外参标定和 KNN 训练必须在现场做。
+
 ## 工作流程
 
 ```mermaid
@@ -248,6 +264,7 @@ python3 -m cube_task run_task --task L1 --mode sim --extrinsics-error 0.003 0.5
 | `calib_verify` / `calib_points` | 悬停核对外参 / 重新估计外参 |
 | `color_calib` / `teach_classes` | 标定 HSV / 采集样本并训练 KNN |
 | `run_task` | 执行一轮任务 |
+| `motion_ctl` | 运控调试：`status`、`pick`（按坐标抓）、`vision`（按视觉目标抓）、`gripper`、`moveit`（接 MoveIt/RViz 拖动） |
 | `sim_bench` | 批量仿真、故障注入及结果统计 |
 
 工具参数用 `python3 -m cube_task <工具> -h` 查看；YOLO 训练和 ONNX 部署见 [YOLO 文档](ws/src/cube_task/docs/yolo.md)。训练环境与 ROS 运行环境分开，模型及依赖在比赛前完成离线验证。
@@ -296,7 +313,8 @@ bash scripts/mujoco_run.sh sim_bench --backend mujoco --tasks L1,L2 \
 |---|---|
 | `No OpenGL_accelerate module loaded` | PyOpenGL 的可选加速模块提示，本身不会阻止仿真；继续查看后面的实际错误 |
 | 窗口打开但没有抓取 | 查看是否已被 `Ctrl+C` 中断，以及日志是否反复出现 `no frame`；有桌面时用 `MUJOCO_GL=glfw bash scripts/mujoco_run.sh ... --viewer` 排查 |
-| `no MuJoCo python` | 按上文创建虚拟环境，或设置 `MUJOCO_PYTHON` |
+| `no MuJoCo python` | 脚本默认找 `~/.venvs/piper-mujoco/bin/python`；虚拟环境在别处时设置 `MUJOCO_PYTHON=<虚拟环境>/bin/python` |
+| RViz 报 `rviz_config does not exist` | 用 `scripts/moveit_rviz.sh` 启动，不要单独 `ros2 launch moveit_rviz.launch.py` |
 | 缺少 `piper.xml` 或网格文件 | 下载完整 `agilex_piper` 目录，确认 `piper.xml` 与 `assets/` 都在，或设置 `sim.mujoco.assets_dir` |
 | 相机 `no frame` / `stale frame` | 检查驱动、话题名、`ROS_DOMAIN_ID`、时间戳和深度对齐；D435i 练习优先使用 USB 3 接口及线材 |
 | 真实 L2 提示缺少 KNN 模型 | 用 `teach_classes` 录制真实样本并训练，或配置已准备好的 ONNX 模型 |
@@ -306,6 +324,7 @@ bash scripts/mujoco_run.sh sim_bench --backend mujoco --tasks L1,L2 \
 ## 详细文档
 
 - [任务包说明](ws/src/cube_task/README.md)：模块结构、工具入口和输出目录。
+- [运控使用说明](ws/src/cube_task/docs/运控使用说明.md)：视觉目标抓取、MoveIt/RViz 拖动控制、实机上电顺序、现场参数。
 - [现场流程](ws/src/cube_task/docs/现场流程.md)：接线、自检、示教、标定核对、空跑与比赛操作。
 - [配置说明](ws/src/cube_task/docs/配置说明.md)：配置项、现场文件和外参格式。
 - [仿真与测试](ws/src/cube_task/docs/仿真与测试.md)：批量评估、故障注入、回放和日志分析。

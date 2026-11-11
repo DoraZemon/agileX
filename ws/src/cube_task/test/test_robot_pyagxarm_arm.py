@@ -562,7 +562,7 @@ def test_gripper_open_and_close_on_object(rig):
 
 
 def test_gripper_clips_width_and_force(rig):
-    arm = rig.make()
+    arm = rig.make(robot__gripper__max_width=0.07)
     arm.gripper(0.5, force=9.0)
     assert rig.ctl.sent[-1] == ('move_gripper_m', 0.07, 3.0)
     arm.gripper(-0.1, force=0.1)

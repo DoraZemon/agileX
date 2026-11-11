@@ -891,6 +891,91 @@ class TaskRunner:
                 self._blacklist(track, 'max_attempts (%s)' % res.error)
         return None, res
 
+    def ready_for_pick(self, go_observe: bool = False) -> Tuple[bool, str]:
+        """
+        Bring the arm to a state pick_detection()/observe_once() can start from.
+
+        Arms the operator keys (p/space abort, e e-stop), refuses when the gripper holds
+        something, lifts to the transit height, optionally goes to the observe pose and
+        opens the gripper. Returns (True, '') or (False, why). Nothing here waits for Enter.
+        """
+        self.arm.set_abort_event(self.operator.abort_event)
+        if hasattr(self.operator, 'set_estop_callback'):
+            self.operator.set_estop_callback(self.arm.emergency_stop)
+        if hasattr(self.operator, 'start'):
+            self.operator.start()
+        if not self._healthy():
+            return False, 'arm not healthy: %s' % (self.fault_detail or 'see log')
+        held = self._holding_at_start()
+        if held is not None:
+            return False, '%s: %s' % held
+        ok_up, err = self._lift_if_low()
+        if not ok_up:
+            return False, 'cannot go up to the transit height: %s' % err
+        if go_observe:
+            ok_move, err = self._go_observe()
+            if not ok_move:
+                return False, 'cannot reach the observe pose: %s' % err
+        g = self.arm.gripper(self.max_width, wait=True)
+        if g.error and g.error != 'timeout':
+            return False, 'gripper open failed: %s %s' % (g.error, g.detail)
+        return True, ''
+
+    def observe_once(self) -> Tuple[Optional[PerceptionResult], str]:
+        """
+        Move to the observe pose, capture and run perception once (tools/motion_ctl vision).
+
+        Vision half of the vision -> motion seam: it returns the PerceptionResult whose
+        detections pick_detection() takes. Returns (result, '') or (None, why).
+        """
+        if self.ext is None:
+            try:
+                from ..core.extrinsics import extrinsics_from_cfg
+                self.ext = self._ext_arg if self._ext_arg is not None \
+                    else extrinsics_from_cfg(self.cfg)
+            except (ImportError, ValueError) as e:
+                return None, 'extrinsics: %s' % e
+            if self.ext is None:
+                return None, 'no extrinsics (camera.extrinsics_file / extrinsics_inline)'
+        if not math.isfinite(self._deadline):
+            self._deadline = self.clock.now() + 3600.0
+        status, result, _frame = self._observe()
+        if status != 'ok' or result is None:
+            return None, '%s: %s' % (status, self._last_obs_failure or self.fault_detail)
+        return result, ''
+
+    def pick_detection(self, det: Detection, zone_name: Optional[str] = None,
+                       neighbors: Sequence[Detection] = (), budget_s: float = 3600.0
+                       ) -> Tuple[Optional[PickResult], str]:
+        """
+        Plan and execute one pick of a detection that did not come from the camera loop.
+
+        This is the seam between vision and motion: the same plan -> reach adjust ->
+        PickPlaceSkill path a competition round takes in _attempt(), for one
+        Detection built by hand (tools/motion_ctl pick). The caller owns the arm
+        (enable, speed, abort event). zone_name defaults to class_to_zone[det.label];
+        neighbors are the other objects on the table (transit clearance).
+
+        Returns (PickResult, '') when the skill ran (check .ok), or (None, why) when
+        nothing moved: no zone, grasp or place infeasible, unreachable pose, or a stop
+        condition (aborted / unhealthy arm).
+        """
+        zone = zone_name or self.class_to_zone.get(det.label)
+        if zone is None or zone not in self.zones:
+            return None, ('no zone for label %r (zone=%r, class_to_zone=%s, zones=%s)'
+                          % (det.label, zone, self.class_to_zone, sorted(self.zones)))
+        if not math.isfinite(self._deadline):
+            self._deadline = self.clock.now() + float(budget_s)
+        rep = TaskReport(task=self.task, ok=False, required=1, time_limit=self.time_limit,
+                         log_dir=str(getattr(self.logger, 'dir', '')))
+        stop, res = self._attempt(det, zone, rep, list(neighbors) or [det])
+        if res is not None:
+            return res, ''
+        if stop is not None:
+            return None, 'stopped before moving: %s' % stop
+        reason = str(self._tracks[-1].get('reason', '')) if self._tracks else ''
+        return None, reason or 'not attempted (measure again)'
+
     def _floors(self, det: Detection, gp, pp, held: float) -> Dict[str, float]:
         """
         Return the lowest z (m) adjust_plan_poses may lower each free-space pose to.

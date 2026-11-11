@@ -44,7 +44,7 @@ PIPER_LIMITS = (
 )
 # Same as config/default.yaml robot.tcp_offset (only used for info / reach checks).
 DEFAULT_TCP_OFFSET = (0.0, 0.0, 0.140, 0.0, 0.0, 0.0)
-GRIPPER_MAX_WIDTH = 0.070            # config robot.gripper.max_width (standard gripper)
+GRIPPER_MAX_WIDTH = 0.100            # config robot.gripper.max_width (100 mm stroke)
 
 DEFAULT_PICK_POLYGON = [[0.15, -0.22], [0.45, -0.22], [0.45, 0.22], [0.15, 0.22]]
 TASKS = ('L1', 'L2', 'L3')
@@ -480,9 +480,12 @@ OFFICIAL_COLORS = {'cucumber': (35, 95, 30), 'pear': (60, 190, 170), 'banana': (
 # taught zones, not observed).
 OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
     # A: green card left of the pick area, red card right, yellow in front.
-    'A': {'cards': {'zone_green': (0.19, 0.30), 'zone_yellow': (0.49, 0.0),
-                    'zone_red': (0.19, -0.30)},
-          'pick': [[0.15, -0.175], [0.365, -0.175], [0.365, 0.175], [0.15, 0.175]],
+    # TEMPORARY (11/11): fits a 1000 x 500 mm table with the base at the middle of a
+    # long edge; the pick area is 0.28 x 0.50 m so that 6 L2 models fit. Replace with
+    # the real layout once the organisers give it.
+    'A': {'cards': {'zone_green': (0.17, 0.35), 'zone_yellow': (0.49, 0.0),
+                    'zone_red': (0.17, -0.35)},
+          'pick': [[0.12, -0.25], [0.40, -0.25], [0.40, 0.25], [0.12, 0.25]],
           'eye_to_hand': ((0.60, 0.0, 0.50), (0.36, 0.0, 0.0)),
           'eye_in_hand': (0.0, 0.486, -0.47, 0.0, 1.168, 0.0)},
     # B: the three cards in a row in front of the pick area.
@@ -962,11 +965,11 @@ def _no_grasp_reason(world: SimWorld, obj: SimObject, max_width: float) -> str:
     c = obj.center_xy()
     T = top_down_T(c[0] + off * math.cos(a), c[1] + off * math.sin(a), z, a)
     _ok, info = world.check_grasp(T, min(w + 0.02, max_width), 0.0)
+    keys = ('extent', 'taper_deg', 'collided')
+    detail = ', '.join('%s %s' % (k, info[k]) for k in keys if k in info) or 'see check_grasp'
     return ('%s: the sections that fit (narrowest %.3f m, %.0f mm below the top) are not '
             'held (%s)' % (info.get('reason') or 'no_grasp', w, 1000.0 * (obj.top_z() - z),
-                           ', '.join('%s %s' % (k, info[k]) for k in ('extent', 'taper_deg',
-                                                                       'collided')
-                                     if k in info) or 'see check_grasp'))
+                           detail))
 
 
 def official_graspability(max_width: float = GRIPPER_MAX_WIDTH) -> Dict[str, str]:
