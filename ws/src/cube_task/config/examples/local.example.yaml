@@ -9,7 +9,7 @@ robot:
   gripper:
     max_width: 0.070           # 标准夹爪 0.070；100 mm 新夹爪 0.100
 camera:
-  mount: eye_to_hand           # 固定支架 eye_to_hand；腕部 eye_in_hand。要和外参文件一致
+  mount: eye_in_hand           # 比赛只有腕端相机（答疑 Q6）。要和外参文件一致
   extrinsics_file: config/site/extrinsics.yaml
   ros:
     color_topic: /camera/color/image_raw
@@ -18,4 +18,4 @@ camera:
     depth_registered: true     # 驱动已把深度对齐到彩色（Orbbec depth_registration:=true）
     depth_scale: 0.001         # 16 位深度的单位 -> m（毫米）
 perception:
-  l1_block_size: 0.035         # L1 方块边长 (m)，量实物
+  l1_block_size: 0.05          # L1 方块边长 (m)：官方 50 mm ± 2 mm

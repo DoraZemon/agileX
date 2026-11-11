@@ -263,7 +263,7 @@ def test_knn_add_samples_and_validation(tmp_path):
 def test_factory_color_knn_onnx(tmp_path, monkeypatch):
     cfg = _cfg()
     c = make_classifier(cfg, 'L1')
-    assert isinstance(c, ColorClassifier) and c.labels == ['red', 'green', 'blue']
+    assert isinstance(c, ColorClassifier) and c.labels == ['red', 'green', 'yellow']
     cfg.set('tasks.L1.labels', ['red', 'pink'])
     with pytest.raises(ValueError):
         make_classifier(cfg, 'L1')

@@ -1,24 +1,26 @@
-# 复制成 config/site/tasks.yaml，拿到官方类别表后修改。
+# 复制成 config/site/tasks.yaml。L1 / L2 按官方答疑文档：3 张 200 × 200 mm 卡纸（绿 / 黄 / 红），
+# 按颜色分拣，同一张卡纸可以放多个物体。
 # class_to_zone 里的区域名要和 teach_poses 示教的区域名（config/site/poses.yaml 的 zones）一致。
 # 不在 class_to_zone 里的类别永远不会被抓。说明见 docs/配置说明.md 第 3.6 节。
 tasks:
   L1:
-    labels: [red, green, blue]
+    labels: [red, green, yellow]
     class_to_zone:
       red: zone_red
       green: zone_green
-      blue: zone_blue
-    order: []                  # 裁判规定顺序时例如 [blue, red, green]；比赛时一般用 run_task --targets
+      yellow: zone_yellow
+    order: []                  # 裁判规定顺序时例如 [yellow, red, green]；比赛时一般用 run_task --targets
   L2:
     classifier: knn            # color | knn | onnx | onnx+knn（docs/yolo.md）
-    labels: [apple, banana, orange, carrot, eggplant, corn]
+    labels: [cucumber, pear, banana, potato, persimmon, bell_pepper]
     class_to_zone:
-      apple: fruit_bin
-      banana: fruit_bin
-      orange: fruit_bin
-      carrot: veg_bin
-      eggplant: veg_bin
-      corn: veg_bin
+      cucumber: zone_green
+      pear: zone_green
+      banana: zone_yellow
+      potato: zone_yellow
+      persimmon: zone_red
+      bell_pepper: zone_red
+    order: []                  # 不要设置：先放梨会让黄瓜在绿区放不下
   L3:
     classifier: knn
     labels: [apple, banana, orange, carrot, eggplant, corn]

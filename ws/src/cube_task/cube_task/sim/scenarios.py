@@ -23,7 +23,8 @@ import numpy as np
 
 from ..core.transforms import inv_T, make_T, pose6_to_T, rotation_angle, top_down_T
 from ..core.types import CameraIntrinsics
-from .world import FINGER_SIZE, GRASP_PAD_HALF, SimObject, SimWorld, SimZone
+from .world import (FINGER_SIZE, GRASP_PAD_HALF, OFFICIAL_MIN_ZONE_FRACTION,
+                    OFFICIAL_ZONE_FRACTION_BY_LABEL, SimObject, SimWorld, SimZone)
 
 # PiPER modified-DH table (d, a, alpha, theta_offset), copied from pyAgxArm
 # api/constants.py ROBOT_MDH_PRESET['piper']; link transform
@@ -1139,7 +1140,9 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
         class_to_zone = ({k: OFFICIAL_CLASS_TO_ZONE[k] for k in labels} if task == 'L2'
                          else {})
         info['time_limit_s'] = 300.0
-    world = SimWorld(table_z=0.0, objects=objects, zones=zones, seed=int(seed))
+    world = SimWorld(table_z=0.0, objects=objects, zones=zones, seed=int(seed),
+                     min_zone_fraction=OFFICIAL_MIN_ZONE_FRACTION,
+                     zone_fraction_by_label=OFFICIAL_ZONE_FRACTION_BY_LABEL)
     why = {o.label: class_grasp(o.label, width)[1] for o in objects}
     info.update(labels=labels, class_to_zone=class_to_zone, categories=categories,
                 zones={z.name: z.to_zone() for z in zones},
