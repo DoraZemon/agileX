@@ -263,9 +263,11 @@ def test_unreachable_still_blacklists_at_once():
 
 
 # ---------------------------------------------------------------- release slots
-def _l2_shared_zone_rig(zone_size=0.16):
+def _l2_shared_zone_rig(zone_size=0.16, wall_height=None):
     rig = Rig('L2')
     rig.cfg.set('zones.zone_red.size', [zone_size, zone_size])
+    if wall_height is not None:
+        rig.cfg.set('zones.zone_red.wall_height', wall_height)
     rig.world = FakeWorld(parse_zones(rig.cfg))
     rig.arm.world = rig.world
     rig.perception.world = rig.world
@@ -293,8 +295,8 @@ def test_shared_zone_spreads_releases_and_clears_earlier_objects():
     assert r2[2] - held2 == pytest.approx(0.015)
 
 
-def test_spread_release_out_of_reach_falls_back_to_the_zone_center():
-    rig = _l2_shared_zone_rig()
+def test_spread_release_out_of_reach_in_a_bin_falls_back_to_the_zone_center():
+    rig = _l2_shared_zone_rig(wall_height=0.05)
     center = np.array([0.20, 0.30])
 
     def reach(T):
@@ -304,6 +306,42 @@ def test_spread_release_out_of_reach_falls_back_to_the_zone_center():
     rig.arm.reach_fn = reach
     rep = rig.runner().run()
     assert rep.ok
+    for e in _picks(rig):
+        assert np.allclose(e['release_xyz'][:2], center)
+
+
+def _flat_card_rig():
+    return _l2_shared_zone_rig(zone_size=0.20, wall_height=0.0)
+
+
+def test_unreachable_release_on_a_card_moves_to_the_next_free_position():
+    rig = _flat_card_rig()
+    blocked = []
+
+    def reach(T):
+        xy = tuple(np.round(T[:2, 3], 4))
+        d = np.abs(T[:2, 3] - [0.20, 0.30])
+        if not blocked and d.max() <= 0.10 and np.linalg.norm(d) > 0.005:
+            blocked.append(xy)                  # the first off-center pose on the card only
+        return (False, 'ik failed') if xy in blocked else (True, '')
+    rig.arm.reach_fn = reach
+    rep = rig.runner().run()
+    assert rep.ok and sorted(rig.world.placed['zone_red']) == ['apple', 'orange']
+    p1, p2 = _picks(rig)
+    assert not np.allclose(p1['release_xyz'][:2], p2['release_xyz'][:2], atol=0.03)
+    assert [e for e in rig.logger.kinds('decision') if e['action'] == 'release_moved']
+
+
+def test_an_occupied_card_center_is_never_the_fallback():
+    rig = _flat_card_rig()
+    center = np.array([0.20, 0.30])
+
+    def reach(T):
+        off = np.linalg.norm(T[:2, 3] - center)
+        return (False, 'ik failed') if 0.005 < off < 0.15 else (True, '')
+    rig.arm.reach_fn = reach
+    rep = rig.runner().run()
+    assert rep.placed == 1 and rig.world.placed['zone_red'] in (['apple'], ['orange'])
     for e in _picks(rig):
         assert np.allclose(e['release_xyz'][:2], center)
 

@@ -65,6 +65,8 @@ MIN_APPROACH_CLEARANCE = 0.02
 #: default grasp.transit_object_clearance (m): the held object's bottom stays this far
 #: above every other object near the straight line from the pick to the release.
 TRANSIT_OBJECT_CLEARANCE = 0.03
+#: release positions tried after an unreachable one (task/runner._attempt).
+RELEASE_RETRIES = 6
 #: an object counts as near that line within its and the held object's half footprints
 #: plus this (m).
 LINE_MARGIN = 0.03
@@ -99,20 +101,39 @@ def _footprint(det: Detection) -> Optional[float]:
     return max(vals) if vals and max(vals) > 0.0 else None
 
 
-def held_shape(det: Detection, gp) -> Optional[Dict[str, Any]]:
+def footprint_dims(det: Detection, nominal: Optional[Sequence[float]] = None
+                   ) -> Optional[Tuple[float, float]]:
     """
-    Return the held object's shape for PlacePlanner.plan(held=...), None if unknown.
+    Return (length, width) of a detection's footprint (m), None when unknown.
 
-    The long axis is perpendicular to the closing axis for 'elongated' grasps
-    (GraspPlanner kind, det.extra['grasp']); grip_z = grasp TCP above the bottom.
+    nominal: (length, width) of the class from place.nominal_footprint; the
+    measured sides never count smaller (a curved or round object measures short).
     """
     vals = [float(v) for v in (det.length, det.width) if v is not None and math.isfinite(
         float(v))]
     if len(vals) < 2 or min(vals) <= 0.0:
         return None
+    L, W = max(vals), min(vals)
+    if nominal is not None:
+        L, W = max(L, float(max(nominal))), max(W, float(min(nominal)))
+    return L, W
+
+
+def held_shape(det: Detection, gp, nominal: Optional[Sequence[float]] = None
+               ) -> Optional[Dict[str, Any]]:
+    """
+    Return the held object's shape for PlacePlanner.plan(held=...), None if unknown.
+
+    The long axis is perpendicular to the closing axis for 'elongated' grasps
+    (GraspPlanner kind, det.extra['grasp']); grip_z = grasp TCP above the bottom.
+    nominal: see footprint_dims.
+    """
+    dims = footprint_dims(det, nominal)
+    if dims is None:
+        return None
     tz = detection_table_z(det)
     kind = (det.extra.get('grasp') or {}).get('kind', '') if det.extra else ''
-    return {'length': max(vals), 'width': min(vals), 'elongated': kind == 'elongated',
+    return {'length': dims[0], 'width': dims[1], 'elongated': kind == 'elongated',
             'grip_width': float(gp.expected_width),
             'grip_z': 0.0 if tz is None else max(0.0, float(gp.T_grasp[2, 3]) - tz)}
 
@@ -213,6 +234,9 @@ class TaskRunner:
         self.views = observe_views(cfg)
         self.multi_view = self.mount == 'eye_in_hand' and len(self.views) > 1
         self.view_merge = float(cfg.get('runner.view_merge_dist_m', MERGE_DIST))
+        self.nominal = {str(k): (float(max(v)), float(min(v)))
+                        for k, v in (cfg.get('place.nominal_footprint', {}) or {}).items()
+                        if v is not None and len(v) == 2}
         self.left_axis = np.asarray(cfg.get('tasks.L3.left_axis', [0.0, 1.0]), dtype=float)[:2]
         self.save_images = bool(cfg.get('logging.save_images', True)) and bool(
             cfg.get('logging.image_every_observation', True))
@@ -827,12 +851,12 @@ class TaskRunner:
         tz = transit_height(self.cfg, list(self.zones.values()), detection_table_z(det), held,
                             max(tops) if tops else None)
         zone = self.zones.get(zone_name)
-        footprint = _footprint(det)
+        footprint = self._footprint(det)
         occupied = list(self._placed.get(zone_name, []))
-        shape = held_shape(det, gp)
-        pending = [(float(d.length), float(d.width)) for d in neighbors
-                   if d is not det and self.class_to_zone.get(d.label) == zone_name
-                   and d.length is not None and d.width is not None]
+        shape = held_shape(det, gp, self.nominal.get(det.label))
+        pending = [footprint_dims(d, self.nominal.get(d.label)) for d in neighbors
+                   if d is not det and self.class_to_zone.get(d.label) == zone_name]
+        pending = [p for p in pending if p is not None]
         pp = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
                               center_first=self._center_first(zone_name), held=shape,
                               pending=pending)
@@ -848,17 +872,39 @@ class TaskRunner:
         report: Dict[str, Any] = {}
         ok, why, tilts = adjust_plan_poses(self.arm, gp, pp, self._floors(det, gp, pp, held),
                                            self.free_tilt, report)
+        avoid: List[Tuple[float, float]] = []
+        while not ok and footprint is not None and len(avoid) < RELEASE_RETRIES:
+            # That release position is out of reach: the next free one, not on top of
+            # an object already in the zone unless nothing else is left.
+            avoid.append((float(pp.T_release[0, 3]), float(pp.T_release[1, 3])))
+            pc = self.placer.plan(zone, held, tz, footprint=footprint, occupied=occupied,
+                                  center_first=self._center_first(zone_name), held=shape,
+                                  pending=pending, avoid=avoid)
+            if not pc.feasible or any(math.hypot(float(pc.T_release[0, 3]) - a,
+                                                 float(pc.T_release[1, 3]) - b) < 1e-6
+                                      for a, b in avoid):
+                break
+            pp = pc
+            place_info = dict(self.placer.last_info)
+            ok, why, tilts = adjust_plan_poses(self.arm, gp, pp,
+                                               self._floors(det, gp, pp, held),
+                                               self.free_tilt, report)
         if not ok and footprint is not None:
-            # The spread release position may be out of reach: try the zone center.
+            # Last resort: the zone center, on a flat card only when nothing lies there.
             pc = self.placer.plan(zone, held, tz, occupied=occupied, held=shape,
                                   center_only=True)
-            if pc.feasible:
-                ok, _why, tilts = adjust_plan_poses(self.arm, gp, pc,
-                                                    self._floors(det, gp, pc, held),
-                                                    self.free_tilt, report)
-                if ok:
-                    pp = pc
+            fpc = self.placer.last_info.get('footprint_clearance')
+            if pc.feasible and (zone.wall_height > 0.0 or fpc is None or fpc >= 0.0):
+                ok_c, why_c, tilts_c = adjust_plan_poses(self.arm, gp, pc,
+                                                         self._floors(det, gp, pc, held),
+                                                         self.free_tilt, report)
+                if ok_c:
+                    ok, why, tilts, pp = ok_c, why_c, tilts_c, pc
                     place_info = dict(self.placer.last_info)
+        if avoid:
+            self._event('decision', action='release_moved', label=det.label, ok=ok,
+                        unreachable=[[round(a, 4), round(b, 4)] for a, b in avoid],
+                        tier=place_info.get('tier'))
         if not ok:
             self._blacklist(track, 'unreachable %s' % why)
             return None, None
@@ -1019,10 +1065,15 @@ class TaskRunner:
         """Release the first object at the zone center unless several labels share the zone."""
         return sum(1 for z in self.class_to_zone.values() if z == zone_name) <= 1
 
+    def _footprint(self, det: Detection) -> Optional[float]:
+        """Largest horizontal extent (m), at least the class's place.nominal_footprint."""
+        dims = footprint_dims(det, self.nominal.get(det.label))
+        return dims[0] if dims is not None else _footprint(det)
+
     def _long_in(self, det: Detection, zone_name: Optional[str]) -> bool:
         """Return True when det is longer than LONG_ZONE_RATIO x the flat zone's smaller side."""
         zone = self.zones.get(zone_name) if zone_name else None
-        fp = _footprint(det)
+        fp = self._footprint(det)
         return (zone is not None and fp is not None and float(zone.wall_height) <= 0.0
                 and fp > LONG_ZONE_RATIO * min(float(zone.size[0]), float(zone.size[1])))
 

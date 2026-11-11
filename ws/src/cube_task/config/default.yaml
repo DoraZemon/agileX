@@ -224,7 +224,21 @@ place:
   # to the zone); the release clears the tallest object already in the zone by 1 cm;
   # false = always the zone center
   spread_releases: true
-  slot_margin: 0.015           # m, a spread release keeps the footprint this far inside the edge
+  # m, a spread release keeps the footprint this far inside the card edge (the rules count
+  # an object only when it is wholly inside; the measured footprint can be ~1 cm short)
+  slot_margin: 0.025
+  # Official sizes [length, width] (m, organizers' Q&A): the release planner never uses a
+  # smaller footprint than these (curved / round objects are measured short)
+  nominal_footprint:
+    cucumber: [0.26, 0.04]
+    banana: [0.18, 0.04]
+    pear: [0.085, 0.085]
+    potato: [0.10, 0.07]
+    persimmon: [0.07, 0.07]
+    bell_pepper: [0.07, 0.07]
+    red: [0.05, 0.05]
+    green: [0.05, 0.05]
+    yellow: [0.05, 0.05]
 
 # Place zones in the base frame. center: [x, y, floor_z]; size: [sx, sy] (m); yaw (rad).
 # SITE: teach with tools/teach_poses (drag the arm above each zone).

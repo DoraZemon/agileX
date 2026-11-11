@@ -41,8 +41,9 @@ NEIGHBOR_CLEARANCE = 0.002
 TABLE_Z_WARN_TOL = 0.01
 #: a released object's bottom passes this far above the tallest object already in the zone.
 STACK_CLEARANCE = 0.01
-#: release slots keep the held object's footprint this far inside the zone edge (m).
-SLOT_MARGIN = 0.015
+#: release slots keep the held object's footprint this far inside the zone edge (m); the
+#: rules count an object only when it is wholly inside the card (cucumber: 2/3).
+SLOT_MARGIN = 0.025
 #: a zone axis gets two release slots only when they are at least this far off center (m).
 SLOT_MIN_OFFSET = 0.01
 #: cross-section profile (det.extra['_points_base']): height bin (m), points a bin needs
@@ -86,6 +87,8 @@ RELEASE_HEIGHT_FLAT = 0.015
 #: spread releases: grid step (m) of the fallback search, smallest edge margin it accepts.
 SLOT_GRID_STEP = 0.005
 SLOT_MIN_EDGE = 0.0
+#: a release xy found unreachable bans the release positions this close (m) to it.
+AVOID_RADIUS = 0.012
 #: a release keeps a free zone diagonal this far (m) from a long object still to come.
 RESERVE_CLEARANCE = 0.005
 #: at a shaped release the fingers open to the grip width + this (m).
@@ -777,7 +780,8 @@ class PlacePlanner:
 
     def release_pose(self, zone: Zone, held: dict, occupied: Sequence[Sequence[float]] = (),
                      center_first: bool = True, pending: Sequence[Sequence[float]] = (),
-                     center_only: bool = False) -> Tuple[float, float, float, dict]:
+                     center_only: bool = False, avoid: Sequence[Sequence[float]] = ()
+                     ) -> Tuple[float, float, float, dict]:
         """
         Return (x, y, closing angle, info) of a shaped release (see plan, held).
 
@@ -792,7 +796,14 @@ class PlacePlanner:
         width) of objects still to come into this zone; when one of them is long
         (LONG_ZONE_RATIO), a short held object keeps one zone diagonal free for it
         (RESERVE_CLEARANCE). center_only: the zone center (best axis there).
+        avoid: release xy already found unreachable; positions within
+        AVOID_RADIUS of them are skipped (the center too, unless center_only).
         """
+        banned = [(float(a[0]), float(a[1])) for a in avoid]
+
+        def skip(x: float, y: float) -> bool:
+            return any(math.hypot(x - a, y - b) <= AVOID_RADIUS for a, b in banned)
+
         L = float(held.get('length', 0.0) or 0.0)
         W = float(held.get('width', 0.0) or 0.0)
         L, W = max(L, W), min(L, W)
@@ -846,10 +857,12 @@ class PlacePlanner:
             return x, y, closing, info
 
         for x, y in ([] if center_only else legacy):
+            if skip(x, y):
+                continue
             for _k, ax, closing, e, cl, more in evaluate(x, y):
                 if e >= self.slot_margin - 1e-9 and cl >= 0.0:
                     return done(x, y, ax, closing, e, cl, more, 'slot')
-        if not self.spread or center_only:
+        if center_only or (not self.spread and not skip(*center)):
             x, y = center
             _k, ax, closing, e, cl, more = max(evaluate(x, y), key=lambda r: (r[3], -r[0]))
             return done(x, y, ax, closing, e, cl, more, 'center')
@@ -862,6 +875,8 @@ class PlacePlanner:
             for j in range(-ny, ny + 1):
                 a, b = i * SLOT_GRID_STEP, j * SLOT_GRID_STEP
                 x, y = center[0] + ca * a - sa * b, center[1] + sa * a + ca * b
+                if skip(x, y):
+                    continue
                 for k, ax, closing, e, cl, more in evaluate(x, y):
                     cand = (x, y, ax, closing, e, cl, more)
                     if cl >= 0.0 and e >= SLOT_MIN_EDGE:
@@ -873,12 +888,17 @@ class PlacePlanner:
                         best_c = (key, cand)
         if best_b is not None:
             return done(*best_b[1], tier='grid')
+        if best_c is None:                      # every grid position avoided
+            x, y = center
+            _k, ax, closing, e, cl, more = max(evaluate(x, y), key=lambda r: (r[3], -r[0]))
+            return done(x, y, ax, closing, e, cl, more, 'center')
         return done(*best_c[1], tier='best_effort')
 
     def plan(self, zone: Optional[Zone], held_offset: float, transit_z: float,
              footprint: Optional[float] = None, occupied: Sequence[Sequence[float]] = (),
              center_first: bool = True, held: Optional[dict] = None,
-             pending: Sequence[Sequence[float]] = (), center_only: bool = False) -> PlacePlan:
+             pending: Sequence[Sequence[float]] = (), center_only: bool = False,
+             avoid: Sequence[Sequence[float]] = ()) -> PlacePlan:
         """
         Return a PlacePlan for releasing into zone (poses in the base frame, m).
 
@@ -889,7 +909,7 @@ class PlacePlanner:
         length, width (footprint, m), elongated (long axis perpendicular to the
         closing axis), grip_width (m), grip_z (grasp TCP above the object
         bottom, m). None = the footprint rule above. pending / center_only: see
-        release_pose (center_only also applies without held).
+        release_pose (center_only also applies without held). avoid: see release_pose.
         """
         eye = np.eye(4)
         self.last_info = {}
@@ -919,7 +939,7 @@ class PlacePlanner:
             W = float(held.get('width', 0.0) or 0.0)
         if held is not None and _finite(L) and _finite(W) and max(L, W) > 0.0:
             x, y, ang, info = self.release_pose(zone, held, occupied, center_first, pending,
-                                                center_only)
+                                                center_only, avoid)
             open_w = info['open_width']
             self.last_info = info
             # On a flat card a footprint clear of the objects already there drops from the
