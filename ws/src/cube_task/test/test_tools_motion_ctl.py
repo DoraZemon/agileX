@@ -185,7 +185,7 @@ def test_jog_target_relative_and_absolute():
     (1, None, None, 0.1),            # --joint without --delta
     (None, None, None, 0.1),         # nothing given
     (1, 0.05, [0.0] * 6, 0.1),       # both given
-    (1, 0.05, None, 0.9),            # --max-step above the hard cap
+    (1, 0.05, None, 3.5),            # --max-step above the hard cap
     (1, float('nan'), None, 0.1),
 ])
 def test_jog_target_refuses_unsafe_or_unclear_requests(joint, delta, to, step):
