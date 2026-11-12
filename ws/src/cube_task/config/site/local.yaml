@@ -20,5 +20,6 @@ robot:
 
 sim:
   mujoco:
+    tcp_z: 0.1425                # 仿真 TCP 与 robot.tcp_offset 一致（模型指垫量出来是 0.135）
     gripper_max_width: 0.100     # MuJoCo 模型默认 70 mm 夹爪，会覆盖 robot.gripper.max_width；比赛夹爪 100 mm
   use_site_knn: false

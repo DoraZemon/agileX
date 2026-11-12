@@ -750,6 +750,12 @@ def build_scene(info: Dict[str, Any], cfg: Any = None, assets_dir: Optional[str]
     assets = assets_dir_for(cfg, assets_dir)
     geo = piper_geometry(str(assets))
     table_z, tcp_z = float(geo['table_z']), float(geo['tcp_z'])
+    tcp_cfg = _cfg_get(cfg, 'sim.mujoco.tcp_z', None)   # None: the measured fingertip
+    if tcp_cfg is not None:
+        tcp_z = float(tcp_cfg)
+        if not 0.05 <= tcp_z <= 0.3:
+            raise ValueError('sim.mujoco.tcp_z must be in [0.05, 0.3] m, got %r' % tcp_z)
+        geo = dict(geo, tcp_z=tcp_z)
     timestep = float(_cfg_get(cfg, 'sim.mujoco.timestep', TIMESTEP))
     if not 1e-4 <= timestep <= 0.01:
         raise ValueError('sim.mujoco.timestep must be in [0.0001, 0.01] s, got %r' % timestep)
