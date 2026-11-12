@@ -324,7 +324,7 @@ class _View:
         t = tc._Teacher.__new__(tc._Teacher)
         t.ui, t.book, t.known, t.task, t.accepted = ui, tc.SampleBook(), [], 'L2', set()
         t.single, t.pred, t.checked, t.view, t.frame = single, {}, [0, 0], 1, None
-        t.source = 'live'
+        t.source, t.rec = 'live', None
         t.dets = [Detection(label='unknown', score=0.0) for _ in range(n_dets)]
         t.usable, t.X = [True] * n_dets, rows(n_dets, 1.0)
         t.out_text = out

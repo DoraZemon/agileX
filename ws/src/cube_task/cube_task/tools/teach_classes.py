@@ -24,6 +24,13 @@ view with exactly one valid instance is labeled LABEL by itself. With --auto
 has been still for AUTO_STILL_S at a pose AUTO_MOVE_M / AUTO_MOVE_DEG away from
 the last view: drag the camera around one object, then 'single <next label>'.
 
+Recording: every live view is saved (RGB-D frame, flange pose, numbered
+instances, labels.json) to ~/vision_data/<time>_teach_<task> (--no-record:
+off). --review DIR ... re-segments the recorded views, writes a contact sheet
+per class with the leave-one-out suspects, lets you relabel ('3#0 pear') or
+drop ('3#0 x') samples, and writes the model and the corrected labels.json
+(see teach_record.py); a perception change is applied by reviewing again.
+
 Predictions: once the samples hold two classes, every new view outside
 single-object mode is classified with them (shown as '#n label?'). Fix the
 wrong ones by number ('2 potato'), then y accepts the rest; the status (s)
@@ -49,6 +56,7 @@ Example commands
     teach_classes --task L2
     teach_classes --task L2 --headless --append
     teach_classes --task L2 --label pear --auto       (drag-teach, one object per class)
+    teach_classes --task L2 --review ~/vision_data/20261112_201500_teach_L2
     teach_classes --task L2 --from-dir ~/vision_data/20261112_apple_1 banana=/data/b1
     teach_classes --mode sim --task L2 --headless
 """
@@ -953,6 +961,7 @@ class _Teacher:
         self.pred: Dict[int, Tuple[str, float]] = {}  # this view: n -> (label, score)
         self.checked = [0, 0]                         # predictions right, predictions labeled
         self.view_pose: Optional[np.ndarray] = None   # flange pose of the last view
+        self.rec: Optional[Path] = None               # recording directory (None = off)
         self._last_pose: Optional[np.ndarray] = None
         self._still_since: Optional[float] = None
 
@@ -1018,6 +1027,7 @@ class _Teacher:
         self.frame, self.dets = frame, dets
         self.X, self.usable = view_features(frame, dets)
         self.layout = layout_of(dets)
+        self._record_view()
         self.pred = {}
         if not self.single:
             self._predict()
@@ -1046,6 +1056,28 @@ class _Teacher:
         if self.single:
             self._label_single()
         return True
+
+    def _record_view(self) -> None:
+        """Save the view (frame, flange pose, numbered instances) to the recording dir."""
+        if self.rec is None:
+            return
+        from .teach_record import save_view
+        try:
+            save_view(self.rec, self.view, self.frame, self.dets)
+        except (OSError, ValueError) as e:
+            self.ui.say('WARNING: recording stopped, view %d not saved: %s' % (self.view, e))
+            self.rec = None
+
+    def _record_labels(self) -> None:
+        """Rewrite labels.json of the recording dir from the samples of this run."""
+        if self.rec is None:
+            return
+        from .teach_record import save_labels
+        try:
+            save_labels(self.rec, {v: self.book.labeled_in_view(v)
+                                   for v in range(1, self.view + 1)})
+        except OSError as e:
+            self.ui.say('WARNING: labels.json not written: %s' % e)
 
     def _predict(self) -> None:
         """Classify the usable instances of this view with the samples so far (self.pred)."""
@@ -1214,6 +1246,7 @@ class _Teacher:
         self.ui.say('labeled %s | samples: %s' % (
             ', '.join('#%d %s' % (i, assign[i]) for i in idx),
             counts_text(self.book.counts(), self.known)))
+        self._record_labels()
         hits = [self.pred[i][0] == assign[i] for i in idx if i in self.pred]
         if hits:
             self.checked[0] += sum(hits)
@@ -1228,6 +1261,7 @@ class _Teacher:
         if b is None:
             self.ui.say('nothing to undo')
             return False
+        self._record_labels()
         where = ' of view %d' % b.view if b.view >= 0 else ''
         self.ui.say('undid %r%s: %d samples removed | samples: %s' % (
             b.text, where, len(b.labels), counts_text(self.book.counts(), self.known)))
@@ -1338,6 +1372,11 @@ def run_live(args, cfg_world_info, ui, book: SampleBook, known: List[str], out: 
         except ValueError as e:
             ui.say('ERROR: invalid perception config: %s' % e)
             return 2
+        if not args.no_record:
+            from .teach_record import session_dir
+            t.rec = session_dir(s.cfg, args.mode, args.task)
+            ui.say('recording every view to %s (labels fixed later with: teach_classes --task '
+                   '%s --review %s)' % (t.rec, args.task, t.rec))
         t.intro()
         if args.label:
             t.set_single('single %s' % args.label)
@@ -1450,6 +1489,74 @@ def run_from_dirs(args, cfg, ui, book: SampleBook, known: List[str], out: Path) 
     return 0 if ok else 1
 
 
+def run_review(args, cfg, ui, book: SampleBook, known: List[str], out: Path) -> int:
+    """Review recorded sessions: contact sheets, relabel / drop by id, write; exit code."""
+    from ..perception.pipeline import Perception
+    from . import teach_record as tr
+    ext = load_extrinsics_or_none(cfg, ui)
+    if ext is None:
+        ui.say('--review needs the camera extrinsics (camera.extrinsics_file)')
+        return 2
+    try:
+        perception = Perception(cfg, classifier=None)
+    except ValueError as e:
+        ui.say('ERROR: invalid perception config: %s' % e)
+        return 2
+    dirs = [Path(d).expanduser() for d in args.review]
+    samples, skipped = tr.load_samples(dirs, perception, ext, flange_to_tcp(cfg), ui)
+    ui.say(tr.review_summary(samples, skipped))
+    if not samples:
+        return 1
+    rv = tr.Reviewer(ui, cfg, args.task, known, dirs, samples, dirs[0] / 'review')
+    base_X, base_y = book.arrays()
+
+    def write() -> bool:
+        X, y = rv.arrays()
+        if not y:
+            ui.say('every sample is dropped: nothing written')
+            return False
+        wb = SampleBook()
+        wb.set_base(base_X, base_y)
+        wb.add(Batch(text='review', labels=y, X=X, source='review'))
+        ok = save_model(ui, cfg, args.task, args.mode, wb, out, 'review', known,
+                        extra={'review_dirs': [str(d) for d in dirs],
+                               'samples': tr.to_report(rv.samples)})
+        if ok:
+            rv.write_labels()
+            rv.dirty = False
+        return ok
+
+    rv.refresh()
+    try:
+        while True:
+            cmd = next_command(ui, 'review [%s]' % tr.REVIEW_HELP)
+            c = (cmd or '').strip()
+            if not c:
+                continue
+            low = c.lower()
+            if low in ('q', 'quit', 'exit', 'esc'):
+                break
+            if low in ('l', 'list'):
+                rv.list_suspects()
+            elif low in ('r', 'redraw'):
+                rv.refresh()
+            elif low in ('e', 'evaluate'):
+                rv.evaluate()
+            elif low in ('w', 'write'):
+                write()
+            elif low in ('h', 'help', '?'):
+                ui.say(tr.REVIEW_HELP)
+            elif len(c) == 1 and not ui.headless:
+                ui.say('unknown key %r (h = help)' % c)
+            elif rv.apply(c):
+                rv.refresh()
+    except KeyboardInterrupt:
+        ui.say('\ninterrupted')
+    if rv.dirty and ui.confirm('Write the model and the labels before quitting?', default=True):
+        write()
+    return 0
+
+
 # ------------------------------------------------------------------ main
 def build_parser() -> argparse.ArgumentParser:
     """Return the command-line parser of teach_classes."""
@@ -1466,6 +1573,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--from-dir', nargs='+', default=None, metavar='[LABEL=]DIR',
                    help='offline: learn from capture session directories (one class each) '
                         'and write the model; no hardware')
+    p.add_argument('--review', nargs='+', default=None, metavar='DIR',
+                   help='review recorded sessions: contact sheets, relabel / drop samples by '
+                        'id, write the model; no hardware')
+    p.add_argument('--no-record', action='store_true',
+                   help='live: do not save the views to ~/vision_data/<time>_teach_<task>')
     p.add_argument('--label', default=None, metavar='LABEL',
                    help='start in single-object mode: a view with one valid instance is '
                         'labeled LABEL by itself (switch with "single <label>")')
@@ -1495,6 +1607,8 @@ def _run(args, cfg_world_info, ui) -> int:
     book = SampleBook()
     if not load_existing(ui, book, out, args.append):
         return 2
+    if args.review:
+        return run_review(args, cfg, ui, book, known, out)
     if args.from_dir:
         return run_from_dirs(args, cfg, ui, book, known, out)
     return run_live(args, cfg_world_info, ui, book, known, out)
