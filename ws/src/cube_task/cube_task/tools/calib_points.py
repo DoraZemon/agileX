@@ -1174,6 +1174,8 @@ class _Calib:
         if ui.headless:
             return operator_action(ui, self.mode, text)
         ui.say('%s, then Enter or space in the preview window (q = cancel this point)' % text)
+        while ui.key(1) is not None:    # keys pressed while the measurement froze the window
+            pass
         while True:
             k = ui.key(50)
             if k in ('\n', ' '):
