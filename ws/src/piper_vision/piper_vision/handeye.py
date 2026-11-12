@@ -1,16 +1,25 @@
 """
 Hand-eye calibration.
 
-Collect pairs of (flange pose, board pose in the camera) and solve for the
-camera mount transform with OpenCV's AX = XB solvers (cv2.calibrateHandEye).
+Collect pairs of (TCP pose, board pose in the camera) and solve for the camera
+mount transform with OpenCV's AX = XB solvers (cv2.calibrateHandEye), matching
+agilexrobotics/handeye_calibration_ros (the agx_arm_calibration node described
+in the AgileX ROS 2 hand-eye tutorial):
 
-    eye_to_hand (fixed camera): solves T_base_camera.
-    eye_in_hand (wrist camera): solves T_flange_camera.
+    eye_in_hand (wrist camera): the board lies still on the table, the camera
+        moves with the arm. Solves T_tcp_camera, stored as T_flange_camera
+        (T_flange_tcp @ T_tcp_camera, T_flange_tcp from the driver tcp_offset).
+    eye_to_hand (fixed camera): the board is fixed on the flange and moves
+        with the arm. Solves T_base_camera.
 
+The gripper transform passed to cv2.calibrateHandEye is T_base_tcp for
+eye_in_hand and its inverse for eye_to_hand, as the tutorial's node does.
 The board pose comes from a ChArUco board seen by the color camera, so the
 result is expressed in the color optical frame (x right, y down, z forward).
-The arm may be moved by hand in drag-teach mode; only the flange pose is
-read, no motion command is ever sent.
+
+The arm is moved by hand in drag-teach mode. The TCP pose is read from the
+agx_arm_ros topic /feedback/tcp_pose as in the tutorial (or with pyAgxArm
+over CAN); no motion or mode command is ever sent.
 
 Capture the board at 10+ poses that differ in orientation, not just position.
 """
@@ -24,7 +33,7 @@ import cv2
 import numpy as np
 
 from .camera import Extrinsics
-from .transforms import inv_T, rotation_angle
+from .transforms import inv_T, pose6_to_T, rotation_angle
 
 LOG = logging.getLogger('piper_vision.handeye')
 
@@ -69,9 +78,9 @@ class BoardSpec:
 
 @dataclass
 class Sample:
-    """One calibration view: the flange pose and the board pose in the camera."""
+    """One calibration view: the TCP pose and the board pose in the camera."""
 
-    T_base_flange: np.ndarray
+    T_base_tcp: np.ndarray
     T_camera_board: np.ndarray
     n_corners: int = 0
     reproj_px: float = 0.0
@@ -92,7 +101,15 @@ class HandEyeResult:
 class HandEyeCalibrator:
     """Collects samples and solves AX = XB for one mount type."""
 
-    def __init__(self, mount: str, method: str = 'park'):
+    def __init__(self, mount: str, method: str = 'park',
+                 tcp_offset: Sequence[float] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)):
+        """
+        tcp_offset is the agx_arm_ros launch argument used while recording the
+        TCP poses (all zeros = the poses are flange poses).
+        """
+        if len(tcp_offset) != 6:
+            raise ValueError('tcp_offset needs 6 values')
+        self.T_flange_tcp = pose6_to_T(tcp_offset)
         if mount not in ('eye_to_hand', 'eye_in_hand'):
             raise ValueError("mount must be 'eye_to_hand' or 'eye_in_hand'")
         if method not in METHODS:
@@ -101,13 +118,13 @@ class HandEyeCalibrator:
         self.method = method
         self.samples: List[Sample] = []
 
-    def add(self, T_base_flange: np.ndarray, T_camera_board: np.ndarray,
+    def add(self, T_base_tcp: np.ndarray, T_camera_board: np.ndarray,
             n_corners: int = 0, reproj_px: float = 0.0) -> Sample:
-        """Record one view. Both poses are 4x4."""
-        sample = Sample(np.asarray(T_base_flange, dtype=float),
+        """Record one view. Both poses are 4x4; the arm pose is T_base_tcp."""
+        sample = Sample(np.asarray(T_base_tcp, dtype=float),
                         np.asarray(T_camera_board, dtype=float),
                         int(n_corners), float(reproj_px))
-        if sample.T_base_flange.shape != (4, 4) or sample.T_camera_board.shape != (4, 4):
+        if sample.T_base_tcp.shape != (4, 4) or sample.T_camera_board.shape != (4, 4):
             raise ValueError('poses must be 4x4')
         self.samples.append(sample)
         return sample
@@ -117,14 +134,16 @@ class HandEyeCalibrator:
         Solve for the camera transform.
 
         Raises ValueError below 4 samples. The residual is the spread of the
-        board pose reconstructed in the base frame (it is fixed in the world,
-        so every sample should give the same pose).
+        pose that the setup holds fixed: the board pose in the base frame for
+        eye_in_hand, the board pose in the flange frame for eye_to_hand.
         """
         if len(self.samples) < MIN_POSES:
             raise ValueError('need at least %d samples, have %d' % (MIN_POSES, len(self.samples)))
         R_g, t_g, R_t, t_t = [], [], [], []
         for s in self.samples:
-            T_gripper = inv_T(s.T_base_flange) if self.mount == 'eye_to_hand' else s.T_base_flange
+            # eye_to_hand passes the inverse, matching handeye_calibration_ros
+            # (PoseMartix with check_mode, mode eye_to_hand).
+            T_gripper = inv_T(s.T_base_tcp) if self.mount == 'eye_to_hand' else s.T_base_tcp
             R_g.append(T_gripper[:3, :3])
             t_g.append(T_gripper[:3, 3:])
             R_t.append(s.T_camera_board[:3, :3])
@@ -133,42 +152,46 @@ class HandEyeCalibrator:
         T = np.eye(4)
         T[:3, :3] = R_x
         T[:3, 3] = np.asarray(t_x).reshape(3)
-        parent = 'base' if self.mount == 'eye_to_hand' else 'flange'
         per = self.residuals(T)
         rms = float(np.sqrt(np.mean(np.square(per))))
-        ext = Extrinsics(T=T, mount=self.mount, parent_frame=parent,
+        if self.mount == 'eye_to_hand':
+            parent, T_store = 'base', T
+        else:
+            parent, T_store = 'flange', self.T_flange_tcp @ T
+        ext = Extrinsics(T=T_store, mount=self.mount, parent_frame=parent,
                          source='handeye %s, %d samples' % (self.method, len(self.samples)),
                          rms=rms)
         return HandEyeResult(ext, rms, float(np.max(per)), per, self.method, len(self.samples))
 
     def residuals(self, T_parent_camera: np.ndarray) -> List[float]:
         """
-        Return per-sample board position spread (m) for a candidate transform.
+        Return per-sample position spread (m) of the pose the setup holds fixed.
 
-        Each sample reconstructs the board pose in the base frame; the spread
-        is the distance of that pose from the median reconstruction.
+        T_parent_camera is the raw solver output (T_tcp_camera for eye_in_hand,
+        T_base_camera for eye_to_hand). eye_in_hand reconstructs the board in
+        the base frame, eye_to_hand reconstructs it in the TCP frame; the
+        spread is the distance of each reconstruction from the median.
         """
-        boards = [self._board_in_base(s, T_parent_camera) for s in self.samples]
+        boards = [self._fixed_pose(s, T_parent_camera) for s in self.samples]
         centers = np.array([b[:3, 3] for b in boards])
         median = np.median(centers, axis=0)
         return [float(np.linalg.norm(c - median)) for c in centers]
 
-    def _board_in_base(self, sample: Sample, T_parent_camera: np.ndarray) -> np.ndarray:
+    def _fixed_pose(self, sample: Sample, T_parent_camera: np.ndarray) -> np.ndarray:
         if self.mount == 'eye_to_hand':
-            T_base_camera = T_parent_camera
-        else:
-            T_base_camera = sample.T_base_flange @ T_parent_camera
-        return T_base_camera @ sample.T_camera_board
+            # The board rides on the arm, so its pose relative to the TCP is constant.
+            return inv_T(sample.T_base_tcp) @ T_parent_camera @ sample.T_camera_board
+        return sample.T_base_tcp @ T_parent_camera @ sample.T_camera_board
 
     def orientation_spread_deg(self) -> float:
-        """Return the mean pairwise flange rotation (deg); small means the data is weak."""
+        """Return the mean pairwise TCP rotation (deg); small means the data is weak."""
         if len(self.samples) < 2:
             return 0.0
         angles = []
         for i in range(len(self.samples)):
             for j in range(i + 1, len(self.samples)):
-                Ri = self.samples[i].T_base_flange[:3, :3]
-                Rj = self.samples[j].T_base_flange[:3, :3]
+                Ri = self.samples[i].T_base_tcp[:3, :3]
+                Rj = self.samples[j].T_base_tcp[:3, :3]
                 angles.append(rotation_angle(Rj.T @ Ri))
         return float(np.degrees(np.mean(angles)))
 
@@ -279,14 +302,13 @@ def draw_detection(color: np.ndarray, T_camera_board: np.ndarray, intrinsics: An
 
 
 def coverage_warning(samples: Sequence[Sample], min_spread_deg: float = 15.0) -> Optional[str]:
-    """Return a warning when the flange orientations barely change, else None."""
+    """Return a warning when the TCP orientations barely change, else None."""
     if len(samples) < 2:
         return None
-    angles = [rotation_angle(samples[j].T_base_flange[:3, :3].T
-                             @ samples[i].T_base_flange[:3, :3])
+    angles = [rotation_angle(samples[j].T_base_tcp[:3, :3].T @ samples[i].T_base_tcp[:3, :3])
               for i in range(len(samples)) for j in range(i + 1, len(samples))]
     spread = float(np.degrees(np.mean(angles)))
     if spread < min_spread_deg:
-        return ('flange orientations differ by only %.1f deg on average; move the board '
-                '(or the wrist) to clearly different angles' % spread)
+        return ('TCP orientations differ by only %.1f deg on average; move the arm to '
+                'clearly different angles, not just translations' % spread)
     return None

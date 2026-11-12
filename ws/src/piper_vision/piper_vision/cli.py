@@ -72,7 +72,11 @@ def cmd_handeye(args) -> int:
     cam = _load_cam(args.camera, need_ext=False)
     mount = args.mount or cam.mount
     spec = BoardSpec.from_dict(cam.board)
-    cal = HandEyeCalibrator(mount, method=args.method)
+    tcp = args.tcp_offset if args.pose_source == 'ros' and not args.frames else [0.0] * 6
+    cal = HandEyeCalibrator(mount, method=args.method, tcp_offset=tcp)
+    print('mount %s: %s' % (mount, 'board flat on the table, camera on the wrist'
+                            if mount == 'eye_in_hand' else
+                            'board fixed on the flange, camera on a stand'))
     if args.frames:
         _collect_offline(args, cam, spec, cal)
     else:
@@ -93,7 +97,7 @@ def cmd_handeye(args) -> int:
         print('  sample %2d: %.1f mm' % (i, e * 1000))
     others = {}
     for m in sorted(METHODS):
-        c = HandEyeCalibrator(mount, m)
+        c = HandEyeCalibrator(mount, m, tcp_offset=tcp)
         c.samples = cal.samples
         try:
             r = c.solve()
@@ -134,9 +138,16 @@ def _collect_offline(args, cam, spec, cal) -> None:
 
 
 def _collect_live(args, cam, spec, cal) -> None:
-    from .live import ArmPoseReader, RosRgbd
+    from .live import ArmPoseReader, RosRgbd, RosTcpPose
     cap = RosRgbd(cam)
-    arm = ArmPoseReader(channel=args.can)
+    if args.pose_source == 'ros':
+        reader = RosTcpPose(args.pose_topic)
+        read_pose, source = reader.averaged, args.pose_topic
+    else:
+        reader = ArmPoseReader(channel=args.can)
+        read_pose, source = reader.flange_averaged, 'pyAgxArm on %s' % args.can
+    arm = reader
+    print('arm pose from %s, tcp_offset %s' % (source, list(cal.T_flange_tcp[:3, 3])))
     print('Move the arm by hand (drag teach) or with your own tool; this tool only reads '
           'the pose.\nEnter = capture, u = undo last, q = solve.')
     try:
@@ -154,7 +165,7 @@ def _collect_live(args, cam, spec, cal) -> None:
                 print('board not found')
                 continue
             T_cb, n, err = det
-            T_bf = arm.flange_averaged()
+            T_bf = read_pose()
             cal.add(T_bf, T_cb, n, err)
             print('%d corners, reprojection %.2f px' % (n, err))
             if args.save_dir:
@@ -162,7 +173,8 @@ def _collect_live(args, cam, spec, cal) -> None:
                 stem = Path(args.save_dir) / ('%03d' % len(cal.samples))
                 cv2.imwrite(str(stem) + '.png', draw_detection(color, T_cb, intr))
                 Path(str(stem) + '.json').write_text(json.dumps(
-                    {'T_base_flange': T_bf.tolist(), 'T_camera_board': T_cb.tolist()}))
+                    {'T_base_tcp': T_bf.tolist(), 'T_camera_board': T_cb.tolist(),
+                     'tcp_offset': list(args.tcp_offset), 'pose_source': source}))
     finally:
         arm.close()
         cap.close()
@@ -310,7 +322,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--method', choices=sorted(METHODS), default='park')
     p.add_argument('--max-reproj', type=float, default=1.5, help='px, drop worse views')
     p.add_argument('--max-rms', type=float, default=0.005, help='m, refuse to write above')
-    p.add_argument('--can', default='can0')
+    p.add_argument('--pose-source', choices=['ros', 'can'], default='ros',
+                   help='live arm pose: ros = agx_arm_ros topic (default, as in the AgileX '
+                        'tutorial), can = pyAgxArm over CAN without the ROS driver')
+    p.add_argument('--pose-topic', default='/feedback/tcp_pose',
+                   help='ros: geometry_msgs/PoseStamped topic of the TCP pose')
+    p.add_argument('--tcp-offset', type=float, nargs=6, default=[0.0] * 6,
+                   metavar=('X', 'Y', 'Z', 'R', 'P', 'YAW'),
+                   help='ros: the tcp_offset agx_arm_ros was launched with (default zeros, '
+                        'i.e. /feedback/tcp_pose is the flange pose)')
+    p.add_argument('--can', default='can0', help='can: CAN interface')
     p.add_argument('--save-dir', default=None, help='live: save each view here')
     p.add_argument('--write', action='store_true', help='write the result into --camera')
     p.set_defaults(fn=cmd_handeye)

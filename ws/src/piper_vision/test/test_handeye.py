@@ -32,28 +32,50 @@ def _noisy(T, rng, t_std=0.0005, r_std_deg=0.1):
     return make_T(dR @ T[:3, :3], T[:3, 3] + rng.normal(0, t_std, 3))
 
 
+def _views(mount, rng, n=12, T_flange_tcp=np.eye(4)):
+    """Return (T_base_tcp, T_camera_board) pairs for the tutorial's two setups."""
+    out = []
+    for T_bf in _flange_poses(n, rng):
+        T_bt = T_bf @ T_flange_tcp
+        if mount == 'eye_in_hand':       # board still on the table, camera on the wrist
+            T_base_board = make_T(np.eye(3), (0.30, 0.0, 0.0))
+            T_cb = inv_T(T_bf @ T_FLANGE_CAM) @ T_base_board
+        else:                            # board fixed on the flange, camera on a stand
+            T_flange_board = make_T(rpy_to_rot(0, 0, 0.3), (0.0, 0.02, 0.05))
+            T_cb = inv_T(T_BASE_CAM) @ T_bf @ T_flange_board
+        out.append((T_bt, _noisy(T_cb, rng)))
+    return out
+
+
 @pytest.mark.parametrize('mount', ['eye_in_hand', 'eye_to_hand'])
 def test_recovers_transform(mount):
     rng = np.random.default_rng(1)
     cal = HandEyeCalibrator(mount)
-    if mount == 'eye_in_hand':
-        T_base_board = make_T(np.eye(3), (0.30, 0.0, 0.0))
-        for T_bf in _flange_poses(12, rng):
-            T_cb = inv_T(T_bf @ T_FLANGE_CAM) @ T_base_board
-            cal.add(T_bf, _noisy(T_cb, rng))
-        truth = T_FLANGE_CAM
-    else:
-        T_flange_board = make_T(rpy_to_rot(0, 0, 0.3), (0.0, 0.02, 0.05))
-        for T_bf in _flange_poses(12, rng):
-            T_cb = inv_T(T_BASE_CAM) @ T_bf @ T_flange_board
-            cal.add(T_bf, _noisy(T_cb, rng))
-        truth = T_BASE_CAM
+    for T_bt, T_cb in _views(mount, rng):
+        cal.add(T_bt, T_cb)
+    truth = T_FLANGE_CAM if mount == 'eye_in_hand' else T_BASE_CAM
     res = cal.solve()
     assert res.extrinsics.mount == mount
+    assert res.extrinsics.parent_frame == ('flange' if mount == 'eye_in_hand' else 'base')
     assert np.linalg.norm(res.extrinsics.T[:3, 3] - truth[:3, 3]) < 0.004
     assert math.degrees(rotation_angle(res.extrinsics.T[:3, :3].T @ truth[:3, :3])) < 0.5
-    if mount == 'eye_in_hand':
-        assert res.rms_m < 0.004
+    # the residual is the spread of whatever the setup holds fixed, so it is
+    # small for both setups when the solution is right
+    assert res.rms_m < 0.004
+
+
+@pytest.mark.parametrize('mount', ['eye_in_hand', 'eye_to_hand'])
+def test_tcp_offset_poses_give_the_flange_result(mount):
+    # agx_arm_ros launched with tcp_offset publishes T_base_tcp on /feedback/tcp_pose
+    tcp = [0.0, 0.0, 0.13, 0.0, 0.0, 0.0]
+    rng = np.random.default_rng(2)
+    cal = HandEyeCalibrator(mount, tcp_offset=tcp)
+    for T_bt, T_cb in _views(mount, rng, T_flange_tcp=pose6_to_T(tcp)):
+        cal.add(T_bt, T_cb)
+    truth = T_FLANGE_CAM if mount == 'eye_in_hand' else T_BASE_CAM
+    res = cal.solve()
+    assert np.linalg.norm(res.extrinsics.T[:3, 3] - truth[:3, 3]) < 0.004
+    assert res.rms_m < 0.004
 
 
 def test_needs_enough_samples():

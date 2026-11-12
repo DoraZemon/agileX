@@ -8,12 +8,13 @@
 
 | 文件 | 内容 |
 |---|---|
-| `config/camera.example.yaml` | 相机参数模板：安装方式、话题、内参、外参、TCP 偏移、标定板。现场 `cp config/camera.example.yaml config/camera.yaml` 后填真实值；`camera.yaml` 已加入 `.gitignore`，不提交 |
+| `config/camera.example.yaml` | 相机参数模板：安装方式、话题、内参、外参、TCP 偏移、标定板，各种外参写法都有说明 |
+| `config/camera.yaml` | 现场配置：腕端大白（eye_in_hand）、大白驱动话题、内参读 camera_info、还没有外参。已加入 `.gitignore`，不提交；丢了就从模板复制 |
 | `config/l1.yaml` | L1 识别参数：HSV 颜色、方块 / 卡纸尺寸、高度阈值、桌面高度、ROI |
 | `piper_vision/camera.py` | 读写 camera.yaml；外参支持多种格式（4x4、平移+四元数、xyz+rpy、反方向、相对 TCP、camera_link + T_link_optical）；`T_base_camera`、点的相机 / 基座互转 |
-| `piper_vision/handeye.py` | ChArUco 检测（兼容 OpenCV 4.5 / 4.7+）、`cv2.calibrateHandEye` 求解、残差和姿态覆盖检查 |
+| `piper_vision/handeye.py` | ChArUco 检测（兼容 OpenCV 4.5 / 4.7+）、`cv2.calibrateHandEye` 求解（与松灵手眼标定教程的约定一致）、残差和姿态覆盖检查 |
 | `piper_vision/l1.py` | L1 检测器 |
-| `piper_vision/live.py` | ROS 2 RGB-D 订阅；pyAgxArm 只读位姿（不发任何运动或模式指令）。**未在真机上测过** |
+| `piper_vision/live.py` | ROS 2 RGB-D 订阅；末端位姿读取：订阅 agx_arm_ros 的 `/feedback/tcp_pose`，或用 pyAgxArm 经 CAN 只读（都不发运动或模式指令）。**未在真机上测过** |
 | `piper_vision/record.py` | 从 ROS 相机采集训练帧（cube_task 录制格式）和录 rosbag2 |
 | `piper_vision/cli.py` | 命令行 |
 
@@ -31,7 +32,7 @@
 
 ```bash
 cd ws/src/piper_vision
-python3 -m piper_vision show                                  # 打印当前相机配置
+python3 -m piper_vision show                                  # 打印当前相机配置（config/camera.yaml）
 python3 -m piper_vision l1 --frames <capture目录> --out /tmp/l1  # 对录制帧做 L1 识别，叠加图写到 /tmp/l1
 python3 -m piper_vision l1                                    # 直接从 ROS 话题取一帧
 python3 -m piper_vision transform --pixel 320 240 0.85        # 像素 + 深度 -> 基座坐标
@@ -40,24 +41,65 @@ python3 -m piper_vision transform --point 0.1 0 0.8 --flange x y z r p yaw   # �
 
 录制帧可以用本包的 `record`（下一节），也可以用 cube_task 的 `capture`，两者格式相同。meta 里的 `T_base_flange` 用于腕部相机。
 
-### 采集数据集和录包
+### 启动大白驱动
 
-先 `source /opt/ros/humble/setup.bash`，并确认大白的驱动已经在发 `camera.yaml` 里的三个话题。
+采集和在线标定都从这里开始。大白驱动（OrbbecSDK_ROS2 的 `orbbec_camera`）编译在 `~/orbbec_ws`。下面的命令每开一个新终端都要先执行前两行。conda 环境里的 python 会让 rclpy 出错，先 `conda deactivate`。
 
 ```bash
-# 采集训练帧：一个目录只放一类，--session 就是类名
-python3 -m piper_vision record --session banana                 # 预览窗口：s/空格 存一帧，a 开关自动存，q 退出
-python3 -m piper_vision record --session banana --count 30 --interval 1   # 无窗口，每 1 s 存一帧，共 30 帧
-python3 -m piper_vision record --session pear --arm             # 同时读法兰位姿（只读，不发运动指令）
+source /opt/ros/humble/setup.bash
+source ~/orbbec_ws/install/setup.bash
 
-# 录 rosbag2（彩色、深度、camera_info 三个话题），之后可以 ros2 bag play 回放再采帧
-python3 -m piper_vision record --session l2_scene --bag --duration 60
+# 1. 确认相机插在 USB 3 口上（蓝色口），记下 2bc5: 后面的 PID
+lsusb | grep 2bc5
+
+# 2. 按型号选 launch 文件（与 cube_task scripts/_env.sh 的对应表一致）：
+#    0659/0559 dabai_dcw   065a dabai_dw    06a0/0561 dabai_dcw2   069f dabai_dw2
+#    069a dabai_max        069e/0560 dabai_max_pro                0658 dabai_d1
+#    认不出时用 dabai.launch.py
+#    depth_registration:=true 必须加，否则深度不对齐彩色图
+ros2 launch orbbec_camera dabai_dcw.launch.py depth_registration:=true
 ```
 
+驱动报 “no device” 或打不开相机时，检查 udev 规则（`ls /etc/udev/rules.d/ | grep obsensor`），装好后要拔插一次相机。
+
+另开终端确认三个话题都在出数据，与 `config/camera.yaml` 的 `topics` 一致：
+
+```bash
+ros2 topic list | grep /camera/
+ros2 topic hz /camera/color/image_raw              # dabai_dcw 默认 10 Hz
+ros2 topic hz /camera/depth/image_raw
+ros2 topic echo --once /camera/color/camera_info   # k 里是内参，camera.yaml 的 intrinsics: null 就是读这里
+```
+
+话题名不同（例如改了 `camera_name`，或者用 RealSense 的 `/camera/camera/...`）时改 `camera.yaml` 的 `topics`。也可以直接用 cube_task 的检查脚本，它会启动驱动、检查帧率和深度并打开 RViz：`bash ws/src/cube_task/scripts/camera_check.sh`。
+
+### 采集数据集和录包
+
+`config/camera.yaml` 已经建好（腕端大白、话题同上、内参读 camera_info、还没有外参）。采集不需要外参。
+
+```bash
+# 终端 1：大白驱动（见上一节）
+# 终端 2：
+source /opt/ros/humble/setup.bash
+cd ws/src/piper_vision
+PY="env -u PYTHONPATH /usr/bin/python3 -s"
+$PY -m piper_vision show            # 确认读到的是 camera.yaml：mount eye_in_hand
+
+# 采集训练帧：一个目录只放一类，--session 就是类名
+$PY -m piper_vision record --session banana                 # 预览窗口：s/空格 存一帧，a 开关自动存，q 退出
+$PY -m piper_vision record --session banana --count 30 --interval 1   # 无窗口，每 1 s 存一帧，共 30 帧
+$PY -m piper_vision record --session pear --arm             # 同时经 CAN 读法兰位姿（只读，不发运动指令）
+
+# 录 rosbag2（彩色、深度、camera_info 三个话题），之后可以 ros2 bag play 回放再采帧
+$PY -m piper_vision record --session l2_scene --bag --duration 60
+```
+
+- 预览窗口的按键只在窗口有焦点时生效，先点一下窗口。左上角显示已存帧数，右半边是深度图；深度大片发黑说明相机离桌面太近（< 0.2 m）或镜头保护膜没撕。
 - 默认输出到 `~/vision_data/<日期>_<session>`，同名目录会接着编号往后存。
 - 每帧存 `NNNNNN_color.png`、`_depth.png`（mm）、`_depth.npy`（m）、`_meta.json`。meta 里有内参，`extra.session` 是类名。
 - `capture`、`session` 这类通用名不能当类名，命令会直接拒绝。
-- 一个会话只放一类果蔬，3–6 个，每存几帧就挪位置、转方向，机械臂停在视野外。每类至少录 2 个会话（不同摆放、不同光照），训练集和验证集按会话划分。
+- `--arm` 需要 pyAgxArm 和已经 up 的 CAN（`bash ws/src/cube_task/scripts/can_up.sh can0`），位姿存在 meta 的 `extra.T_base_flange`；腕部相机的帧要做 L1 识别或离线标定时才需要它，训练 YOLO / KNN 不需要。
+- 相机在手腕上：用示教模式把机械臂拖到观察位（和比赛时的观察姿态相近），然后在桌上摆物体。一个会话只放一类果蔬，3–6 个，每存几帧就挪位置、转方向，也可以换几个观察高度和角度。每类至少录 2 个会话（不同摆放、不同光照），训练集和验证集按会话划分。
 
 录好的目录可以直接给 cube_task 用（在 `ws/src/cube_task` 下运行）：
 
@@ -73,14 +115,57 @@ python3 -m cube_task teach_classes --task L2 --from-dir ~/vision_data/20261112_b
 
 ### 手眼标定
 
-1. `python3 -m piper_vision board --out board.png`，按 200 dpi、100% 比例打印，用尺子量格子，把实测值写进 camera.yaml 的 `board.square_m` / `marker_m`。
-2. eye_in_hand：标定板平放在桌上不动，拖动机械臂从 10–15 个不同角度拍。eye_to_hand：标定板固定在法兰上，在相机视野里换 10–15 个姿态。姿态之间要有明显的转动（平均 >15°，否则会警告）。
-3. 二选一：
-   - 在线：`python3 -m piper_vision handeye --can can0 --save-dir /tmp/he`，回车采一组，`u` 撤销，`q` 求解；
-   - 离线：用 cube_task `capture` 录好帧，`python3 -m piper_vision handeye --frames <目录>`。
-4. 看输出的残差（标定板在基座系里的位置离散度），rms ≤ 5 mm 才允许 `--write` 写回 camera.yaml（`--max-rms` 可调）。同时会打印 5 种求解方法的 rms 供对比。
+方法与松灵《ROS2机械臂手眼标定教程（眼在手上，眼在手外，nero可用）》V2.0 一致：机械臂驱动用 agx_arm_ros，从 `/feedback/tcp_pose` 读末端位姿，`cv2.calibrateHandEye` 解 AX=XB，眼在手外时把末端位姿取逆再送进求解器。区别是标定板：教程用 aruco_ros 识别单个 ArUco 码，本包直接识别 ChArUco 板（角点多，姿态更稳），不需要 aruco_ros。
 
-规则里相机由组委会安装和标定。拿到官方结果后直接填进 camera.yaml 的 `extrinsics` 段即可；自己的标定只用来核对官方结果，或者在官方允许时替换。
+两种安装方式下标定板放的位置不同：
+
+| 安装方式 | 相机 | 标定板 | 求出 |
+|---|---|---|---|
+| eye_in_hand（比赛就是这种） | 固定在法兰上，随机械臂动 | **平放在桌上，全程不动** | `T_flange_camera` |
+| eye_to_hand | 固定在支架上不动 | **固定在法兰（末端）上，随机械臂动** | `T_base_camera` |
+
+比赛只有腕端大白，所以用第一行：标定板放桌上，只动机械臂。
+
+1. 生成并打印标定板：`$PY -m piper_vision board --camera config/camera.yaml --out board.png`，按 200 dpi、100% 比例打印，贴在硬板上。用尺子量格子，把实测值写进 `camera.yaml` 的 `board.square_m` / `marker_m`。
+2. 终端 1 启动大白驱动（见“启动大白驱动”）。
+3. 终端 2 启动机械臂驱动（PiPER 上电、CAN 已 up，`auto_enable:=false` 不会使能电机）：
+
+   ```bash
+   source /opt/ros/humble/setup.bash
+   source <agx_arm_ros 工作空间>/install/setup.bash
+   ros2 launch agx_arm_ctrl start_single_agx_arm_rviz.launch.py can_port:=can0 arm_type:=piper \
+       effector_type:=agx_gripper auto_enable:=false tcp_offset:='[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]'
+   ros2 topic echo --once /feedback/tcp_pose      # 另开终端确认有位姿
+   ```
+
+   `tcp_offset` 建议保持全 0，这时 `/feedback/tcp_pose` 就是法兰位姿。教程里填了夹爪的 `0.13`，那样结果是相对 TCP 的；如果照填，下一步要加同样的 `--tcp-offset 0 0 0.13 0 0 0`，程序会换算回法兰。
+4. 终端 3 采集并求解：
+
+   ```bash
+   cd ws/src/piper_vision
+   $PY -m piper_vision handeye --save-dir /tmp/he      # 默认 --pose-source ros，读 /feedback/tcp_pose
+   ```
+
+   机械臂切到示教模式，拖到一个姿态、停稳，回车采一组；`u` 撤销上一组，`q` 求解。每组都要：标定板完整在画面里、终端打印的重投影误差 < 1.5 px。姿态要有俯仰、横滚、偏航三个方向的转动，不要只平移（平均转角 < 15° 会警告）；标定板在画面里的位置、大小、倾角也要各不相同。教程建议 15–25 组。
+5. 看输出：残差是“本应不动的东西”算出来的离散度，eye_in_hand 是标定板在基座系的位置，eye_to_hand 是标定板相对末端的位置。rms ≤ 5 mm 才允许加 `--write` 写回 `camera.yaml`（`--max-rms` 可调），同时打印 5 种求解方法的 rms 供对比。确认后重跑最后一步加 `--write`，或者用 `/tmp/he` 里保存的数据。
+
+没有 ROS 驱动时可以 `--pose-source can` 直接用 pyAgxArm 读法兰位姿；也可以离线：先 `record --arm` 录帧（meta 里带 `T_base_flange`），再 `handeye --frames <目录>`。
+
+已经用教程的 `handeye_calibration_ros` 标过时，可以把它输出的 JSON（`position` + `orientation` 四元数 xyzw）填进 `camera.yaml`，不用重标：
+
+```yaml
+extrinsics:
+  T_tcp_camera:                     # 结果是 TCP -> 相机
+    position: [x, y, z]
+    orientation: [qx, qy, qz, qw]
+  tcp_offset: [0.0, 0.0, 0.13, 0.0, 0.0, 0.0]    # 标定时 agx_arm_ros 用的 tcp_offset
+  child_frame: camera_color_optical_frame
+  source: handeye_calibration_ros
+```
+
+那个工具的相机坐标系取决于 aruco_ros 的 `reference_frame`：填的是 `camera_color_optical_frame` 就按上面写；填的是 `camera_link` 就把 `child_frame` 改成 `camera_link`，并加上 `T_link_optical`（`ros2 run tf2_ros tf2_echo camera_link camera_color_optical_frame` 的结果）。
+
+比赛不提供标定文件（答疑 Q5–Q9），在本队调试时段自己标。cube_task 用的是自己的 `calib_points`（`scripts/handeye.sh`），本包的结果可以用来核对它。
 
 ## 接入 cube_task（sanlan）
 
@@ -118,7 +203,7 @@ python3 -m cube_task run_task --task L1 --mode real         # 真机，直接读
 
 - 现场灯光下的 HSV 阈值需要用 cube_task 的 `color_calib` 重标。
 - 外参要换成组委会的标定结果；TCP 长度 0.140 与 0.1425 需要确认，并在 cube_task 和本包 `camera.yaml` 两处同步。
-- `live.py` 的 ROS 取图和 pyAgxArm 只读位姿没有在真机上验证。真机空跑（`--dry-run`）已走到等待相机画面一步。`record` 只用一个假的 ROS 相机节点测过（640×480，深度 16UC1），没有接过大白。
+- `live.py` 的 ROS 取图、`/feedback/tcp_pose` 订阅和 pyAgxArm 只读位姿没有在真机上验证。真机空跑（`--dry-run`）已走到等待相机画面一步。`record` 只用一个假的 ROS 相机节点测过（640×480，深度 16UC1），没有接过大白。
 - L2 还没有切到新方法，开关目前只作用于 L1。
 
 ## 测试
