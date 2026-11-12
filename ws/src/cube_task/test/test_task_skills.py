@@ -58,6 +58,19 @@ def test_success_sequence_and_logging():
     assert log.kinds('pick_result')[0]['ok'] is True
 
 
+def test_release_opens_past_a_held_width_wider_than_planned():
+    # The detection (0.03 m) under-sized the block; the gripper closed at 0.06 m.
+    cfg, clock, world, arm, log, skill, g, _p = _setup()
+    held = {'length': 0.03, 'width': 0.03, 'grip_width': 0.03}
+    p = PlacePlanner(cfg).plan(parse_zones(cfg)['zone_red'], held_offset_of(g), 0.2, held=held)
+    arm.close_width_fn = lambda: 0.06
+    r = skill.execute(g, p)
+    assert r.ok and r.stage == 'done', (r.stage, r.error)
+    assert p.open_width < 0.06
+    assert arm.gripper_cmds()[-1] == arm.max_width        # 0.06 + 0.02, capped
+    assert g.open_width == arm.max_width                   # L1 grasps open fully
+
+
 def test_grasp_miss_opens_and_retreats_without_transit():
     cfg, clock, world, arm, log, skill, g, p = _setup()
     world.miss_next = 1

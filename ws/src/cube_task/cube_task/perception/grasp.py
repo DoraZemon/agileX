@@ -331,6 +331,9 @@ class GraspPlanner:
             raise ValueError('grasp.max_object_width must be in (0, max_width], got %r'
                              % self.max_object_width)
         self.open_margin = _float(cfg, 'robot.gripper.open_margin', 0.02)
+        # Open to max_width before every grasp of these tasks (a turned block fits).
+        self.open_full = self.task in [str(t) for t in
+                                       (cfg.get('grasp.open_full_tasks', None) or [])]
         self.close_width = _float(cfg, 'robot.gripper.close_width', 0.0)
         self.table_clearance = _required_float(cfg, 'robot.workspace.min_table_clearance')
         # The taught table height bounds the grasp floor from below (extrinsics z offset).
@@ -434,6 +437,8 @@ class GraspPlanner:
             z_grasp, expected, open_w, reason, more = self._profile_grasp(
                 det, prof, top, z_floor)
             info.update(more)
+        if self.open_full:
+            open_w = self.max_width
         if not reason and z_grasp >= top:
             reason = 'too_flat: top %.4f m is not above the lowest TCP z %.4f m' % (top, z_floor)
         info['z_rel'] = round(z_grasp - table_z, 4)
@@ -540,7 +545,8 @@ class GraspPlanner:
         nb = np.asarray(nb, dtype=np.float64).reshape(-1, 2)
         if nb.shape[0] == 0:
             return 0
-        open_w = min(self.max_width, expected + self.open_margin)
+        open_w = (self.max_width if self.open_full
+                  else min(self.max_width, expected + self.open_margin))
         ax = np.array([math.cos(closing), math.sin(closing)])
         rel = nb - np.array([x, y])
         along = np.abs(rel @ ax)

@@ -98,6 +98,27 @@ def _td(x, y, z):
     return tf.top_down_T(x, y, z, tf.neutral_closing_angle(x, y))
 
 
+def test_p2p_target_the_controller_cannot_solve_goes_by_joints(setup):
+    _cfg_, inner, arm = setup
+    replies = [MotionResult(ok=False, error='unreachable', detail='arm_status NO_SOLUTION')]
+    move_tcp = inner.move_tcp
+
+    def scripted(T, linear=False, timeout=None):
+        move_tcp(T, linear, timeout)
+        return replies.pop(0) if replies else MotionResult(ok=True)
+    inner.move_tcp = scripted
+    res = arm.move_tcp(_td(0.31, 0.02, 0.06))
+    assert res.ok
+    assert [c if isinstance(c, str) else c[0] for c in inner.calls] == ['move_tcp', 'move_joints']
+    q = np.asarray(inner.calls[1][1])
+    assert np.allclose((inner.kin.fk(q) @ inner.T_ft)[:3, 3], [0.31, 0.02, 0.06], atol=1e-3)
+    # A linear move is not replaced: its path is the controller's straight line.
+    inner.calls.clear()
+    replies.append(MotionResult(ok=False, error='unreachable', detail='x'))
+    assert not arm.move_tcp(_td(0.31, 0.02, 0.05), linear=True).ok
+    assert [c[0] for c in inner.calls] == ['move_tcp']
+
+
 # ---------------------------------------------------------------- SafetyGuard
 def test_guard_accepts_nominal_pose():
     g = SafetyGuard(_cfg())

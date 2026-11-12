@@ -222,6 +222,7 @@ grasp:
   use_cap_center: true         # aim at the center of the topmost points (round objects)
   max_object_width: null       # null -> robot.gripper.max_width - 0.005
   verify_grasp: true
+  open_full_tasks: [L1]         # open to robot.gripper.max_width before these tasks' grasps
 
 place:
   release_height: 0.06         # object bottom above the zone floor when the gripper opens

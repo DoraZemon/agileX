@@ -516,7 +516,34 @@ class SafeArm(ArmInterface):
             ok, reason = self._check_joint_path(q_now, q_goal)
         if not ok:
             return _rejected(reason)
-        return self._arm.move_tcp(T, linear=linear, timeout=timeout)
+        res = self._arm.move_tcp(T, linear=linear, timeout=timeout)
+        if not linear and q_goal is not None and not res.ok and res.error == 'unreachable':
+            return self._p2p_by_joints(q_goal, res, timeout)
+        return res
+
+    def _p2p_by_joints(self, q_goal: np.ndarray, res: MotionResult,
+                       timeout: Optional[float]) -> MotionResult:
+        """
+        After the controller found no solution for a P2P target, move_j to our IK solution.
+
+        The controller solves move_p itself and refuses some leaned poses that
+        q_goal (within the joint limits) reaches; the joint path is checked again
+        from where the arm is now. Returns the original result when that fails.
+        """
+        gate = self._gate()
+        if gate is not None:
+            return res
+        q_now = self._current_joints()
+        if q_now is None:
+            return res
+        ok, reason = self._check_joint_path(q_now, q_goal)
+        if not ok:
+            LOG.warning('P2P target refused by the controller (%s); joint fallback refused: %s',
+                        res.detail, reason)
+            return res
+        LOG.warning('P2P target refused by the controller (%s); moving to the checked joint '
+                    'solution instead', res.detail)
+        return self._arm.move_joints(q_goal, timeout=timeout)
 
     def _current_tcp(self, q_now: Optional[np.ndarray]) -> Optional[np.ndarray]:
         st = self._arm.get_tcp_pose()
