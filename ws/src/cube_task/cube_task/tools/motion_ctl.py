@@ -37,8 +37,7 @@ from .run_task import (_arm_text, _attach_mujoco, _close_mujoco, _precheck, _say
 _LOG = logging.getLogger('cube_task.tools.motion_ctl')
 
 MAX_JOG_RAD = 0.10       # default cap per joint for one `joints` move (about 5.7 deg)
-HARD_JOG_RAD = 0.35      # --max-step above this is refused
-
+HARD_JOG_RAD = 3      # --max-step above this is refused
 
 def _common_parent() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(add_help=False)

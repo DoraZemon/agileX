@@ -1,0 +1,20 @@
+# cube_task camera extrinsics, written 2026-11-12T12:42:31
+# matrix = T_flange_camera: maps points in the camera color optical frame (x right,
+#   y down, z forward) into the flange frame. Units: meters.
+# mount eye_in_hand (wrist camera) -> T_flange_camera.
+# matrix, translation and quaternion (x, y, z, w) must agree. When editing by
+#   hand, change all of them or delete translation and quaternion.
+# For reading only: t = [-74.8, -10.6, 39.9] mm, rpy (R = Rz Ry Rx) = [-17.703, -0.863, -89.034] deg
+mount: eye_in_hand
+parent_frame: flange
+child_frame: camera_color_optical_frame
+matrix:
+- [0.016849770509720086, 0.9525860005907056, 0.3038025620569606, -0.07481093953641399]
+- [-0.9997445148888887, 0.011472863908420616, 0.019475069789818878, -0.010644735588858398]
+- [0.015066193392799826, -0.3040530954822571, 0.9525359441744486, 0.03992185033760787]
+- [0.0, 0.0, 0.0, 1.0]
+translation: [-0.07481093953641399, -0.010644735588858398, 0.03992185033760787]
+quaternion: [-0.11493581081069842, 0.1025757637361917, -0.6935800800477742, 0.7037148887498029]
+source: calib_points
+rms: 0.005452064774217883
+stamp: '2026-11-12T12:42:31'

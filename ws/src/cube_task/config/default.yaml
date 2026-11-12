@@ -13,7 +13,7 @@ site_overlays:
 robot:
   backend: pyagxarm            # pyagxarm | sim
   model: piper                 # piper | piper_h | piper_l | piper_x
-  firmware: default            # default | v183 | v188 | v189 (pyAgxArm PiperFW; connect logs a mismatch)
+  firmware: v189               # default | v183 | v188 | v189 (pyAgxArm PiperFW; connect logs a mismatch)
   can_interface: socketcan
   can_channel: can0
   effector: agx_gripper
