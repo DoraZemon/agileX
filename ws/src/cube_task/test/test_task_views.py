@@ -6,7 +6,7 @@ import copy
 from cube_task.core.types import CameraIntrinsics, PerceptionResult
 from cube_task.task.views import (drop_near, merge_view_detections, nearest_view,
                                   observe_views, polygon_points, tag_view, view_coverage,
-                                  view_of)
+                                  view_of, views_near)
 import numpy as np
 import pytest
 from test_task_fakes import FakeExt, FakePerception, make_cfg, make_det, Rig
@@ -49,6 +49,24 @@ def test_merge_keeps_one_detection_per_object():
     assert view_of(red_stale) == 0                    # a fresh view beats a stale one
     far = merge_view_detections({0: a0, 1: tag_view([_det('red', 0.40, 0.05)], 1)})
     assert len(far) == 2
+
+
+def test_merge_prefers_a_whole_view_even_over_a_fresh_partial_one():
+    whole = tag_view([_det('cucumber', 0.30, 0.05, n=200)], 0)
+    whole[0].length = 0.24
+    cut = tag_view([_det('cucumber', 0.31, 0.05, n=900)], 1)
+    cut[0].length = 0.08                                        # under the gripper
+    partial = (lambda d: d.length < 0.15)
+    kept = merge_view_detections({0: whole, 1: cut}, stale={0}, partial=partial)
+    assert len(kept) == 1 and view_of(kept[0]) == 0
+    assert view_of(merge_view_detections({0: whole, 1: cut}, stale={0})[0]) == 1
+
+
+def test_views_near():
+    scene = {0: [_det('red', 0.30, 0.0)], 1: [_det('blue', 0.30, 0.20)], 2: []}
+    assert views_near(scene, (0.32, 0.05), 0.12) == {0}
+    assert views_near(scene, (0.30, 0.10), 0.12) == {0, 1}
+    assert views_near(scene, (0.60, 0.0), 0.12) == set()
 
 
 def test_drop_near_and_nearest_view():
@@ -136,6 +154,29 @@ def test_the_target_view_is_captured_again_after_a_pick():
     picks = [i for i, e in enumerate(acts) if e['action'] == 'pick']
     between = acts[picks[0] + 1:picks[1]]
     assert [e['view'] for e in between] == [0]     # fresh view of the next target only
+
+
+@pytest.mark.parametrize('radius,rescans', [(0.12, []), (-1.0, [2])])
+def test_a_target_far_from_the_last_pick_is_picked_without_a_new_view(radius, rescans):
+    rig = _rig([('red', 0.25, -0.15), ('blue', 0.30, 0.16)])   # views 0 and 2, far apart
+    rig.cfg.set('tasks.L1.required', 2)
+    rig.cfg.set('runner.rescan_radius_m', radius)
+    rep = rig.runner().run()
+    assert rep.ok and rep.placed == 2
+    acts = _actions(rig)
+    picks = [i for i, e in enumerate(acts) if e['action'] == 'pick']
+    assert [e['view'] for e in acts[picks[0] + 1:picks[1]]] == rescans
+
+
+def test_a_partial_view_of_a_long_object_is_not_a_target():
+    runner = _rig([]).runner()
+    cuc = _det('cucumber', 0.30, 0.0)
+    for length, partial in ((0.08, True), (0.22, False)):
+        cuc.length = length
+        assert runner._partial(cuc) is partial
+    cube = _det('red', 0.30, 0.0)
+    cube.length = 0.01
+    assert not runner._partial(cube)                    # not an elongated class
 
 
 def test_nothing_left_after_full_scans_ends_the_round():

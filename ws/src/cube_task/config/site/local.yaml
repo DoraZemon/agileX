@@ -11,6 +11,7 @@ perception:
     pick_polygon: null
 
 robot:
+  speed_percent: 50            # 11/12: L1 / L2 pass at 20-30 %; --speed lowers it
   workspace:                   # 11/12 实测桌面：卡纸中心 (0.60, 0, ±0.30)，要放宽工作区
     x: [0.08, 0.75]
     y: [-0.55, 0.55]

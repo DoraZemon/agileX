@@ -112,10 +112,15 @@ def test_p2p_target_the_controller_cannot_solve_goes_by_joints(setup):
     assert [c if isinstance(c, str) else c[0] for c in inner.calls] == ['move_tcp', 'move_joints']
     q = np.asarray(inner.calls[1][1])
     assert np.allclose((inner.kin.fk(q) @ inner.T_ft)[:3, 3], [0.31, 0.02, 0.06], atol=1e-3)
-    # A linear move is not replaced: its path is the controller's straight line.
+    # A short linear move (lift / descend) is replaced too, a long one is not.
+    inner.q = q
     inner.calls.clear()
     replies.append(MotionResult(ok=False, error='unreachable', detail='x'))
-    assert not arm.move_tcp(_td(0.31, 0.02, 0.05), linear=True).ok
+    assert arm.move_tcp(_td(0.31, 0.02, 0.09), linear=True).ok
+    assert [c[0] for c in inner.calls] == ['move_tcp', 'move_joints']
+    inner.calls.clear()
+    replies.append(MotionResult(ok=False, error='unreachable', detail='x'))
+    assert not arm.move_tcp(_td(0.31, 0.20, 0.06), linear=True).ok      # 0.20 m away
     assert [c[0] for c in inner.calls] == ['move_tcp']
 
 

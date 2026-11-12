@@ -30,6 +30,16 @@ def _card(name='zone_green', **kw):
     return parse_zone(name, d)
 
 
+def _inside_along(zone, x, y, axis, length):
+    """Return the fraction of a length-long segment centered at x, y on axis inside zone."""
+    ts = np.linspace(-length / 2.0, length / 2.0, 261)
+    px = x + ts * math.cos(axis) - zone.center[0]
+    py = y + ts * math.sin(axis) - zone.center[1]
+    c, s_ = math.cos(-zone.yaw), math.sin(-zone.yaw)
+    u, v = c * px - s_ * py, s_ * px + c * py
+    return float(np.mean((abs(u) <= zone.size[0] / 2.0) & (abs(v) <= zone.size[1] / 2.0)))
+
+
 def _row(pp, plan, shape, height):
     i = pp.last_info
     return (i['xy'][0], i['xy'][1], shape['length'], height, shape['length'], shape['width'],
@@ -40,27 +50,30 @@ def _row(pp, plan, shape, height):
 def test_flat_card_release_height_and_walled_bins_unchanged():
     pp = PlacePlanner(make_cfg('L2'))
     p = pp.plan(_card(), 0.02, 0.2, held=PEAR)
-    assert p.T_release[2, 3] == pytest.approx(0.015 + 0.02)
+    assert pp.release_height_flat == pytest.approx(0.01)       # low: fruit does not roll
+    assert p.T_release[2, 3] == pytest.approx(0.01 + 0.02)
     bin_ = _card('bin', wall_height=0.05)
     q = pp.plan(bin_, 0.02, 0.2)
     assert q.T_release[2, 3] == pytest.approx(0.05 + 0.02 + 0.02)
     assert pp.plan(_card(release_height=0.03), 0.02, 0.2).T_release[2, 3] == pytest.approx(0.05)
 
 
-def test_long_object_lies_along_the_zone_diagonal_inside_the_card():
+def test_long_object_lies_along_a_card_axis_on_the_side_nearer_the_robot():
     z = _card()
     pp = PlacePlanner(make_cfg('L2'))
     p = pp.plan(z, 0.01, 0.2, held=CUCUMBER, center_first=False)
     info = pp.last_info
-    assert abs(abs(wrap_pi(info['axis'])) - math.pi / 4.0) < 1e-3
+    assert info['tier'] == 'long_strip'
+    # The card (0.25, 0.30) lies at 50 deg from the base: its y axis is nearer.
+    assert abs(abs(wrap_pi(info['axis'])) - math.pi / 2.0) < 1e-4       # rounded in info
+    assert info['xy'] == pytest.approx([0.25 - (0.10 - 0.02 - pp.slot_margin), 0.30])
+    assert _inside_along(z, info['xy'][0], info['xy'][1], info['axis'], 0.26) >= 0.75
     # The fingers close across the long axis, at the equivalent angle nearest the neutral one.
     x, y = p.T_release[:2, 3]
     closing = math.atan2(p.T_release[1, 1], p.T_release[0, 1])
     assert abs(math.cos(closing - info['axis'])) < 1e-3
     assert abs(wrap_pi(closing - neutral_closing_angle(x, y))) <= math.pi / 2.0 + 1e-9
-    cap = footprint_capsule(x, y, 0.26, 0.04, info['axis'])
-    assert capsule_edge_margin(z, cap) >= 0.0
-    assert p.T_release[2, 3] == pytest.approx(0.015 + 0.01)
+    assert p.T_release[2, 3] == pytest.approx(0.01 + 0.01)
 
 
 @pytest.mark.parametrize('pear_first', [False, True])
@@ -77,12 +90,15 @@ def test_green_zone_holds_cucumber_and_pear(pear_first):
         info = pp.last_info
         cap = footprint_capsule(info['xy'][0], info['xy'][1], shape['length'], shape['width'],
                                 info['axis'])
-        assert capsule_edge_margin(z, cap) >= 0.0                  # inside the card
+        if shape is CUCUMBER:                                      # 2/3 inside is enough
+            assert _inside_along(z, info['xy'][0], info['xy'][1], info['axis'], 0.26) >= 0.75
+        else:
+            assert capsule_edge_margin(z, cap) >= 0.0              # wholly inside the card
         assert info['footprint_clearance'] is None or info['footprint_clearance'] >= 0.0
-        assert p.T_release[2, 3] - shape['grip_z'] == pytest.approx(0.015)   # not stacked
+        assert p.T_release[2, 3] - shape['grip_z'] == pytest.approx(0.01)    # not stacked
         occ.append(_row(pp, p, shape, h))
         caps.append(cap)
-    assert pp.last_info['tier'] in ('slot', 'grid', 'best_effort')
+    assert pp.last_info['tier'] in ('slot', 'grid', 'best_effort', 'long_strip')
 
 
 def test_two_cubes_spread_on_a_card():
@@ -93,7 +109,7 @@ def test_two_cubes_spread_on_a_card():
     assert np.allclose(p1.T_release[:2, 3], [0.25, 0.30])           # center first
     p2 = pp.plan(z, 0.02, 0.2, held=cube, occupied=[_row(pp, p1, cube, 0.05)])
     assert np.linalg.norm(p2.T_release[:2, 3] - p1.T_release[:2, 3]) >= 0.05
-    assert p2.T_release[2, 3] == pytest.approx(0.035)
+    assert p2.T_release[2, 3] == pytest.approx(0.03)
     assert p2.open_width == pytest.approx(0.07)
 
 
@@ -243,16 +259,16 @@ def test_runner_releases_the_long_cucumber_first_then_the_pear_beside_it(monkeyp
     picks = [e for e in rig.logger.kinds('decision') if e['action'] == 'pick']
     assert [e['label'] for e in picks] == ['cucumber', 'pear']
     cuc, pear = (e['place'] for e in picks)
-    assert abs(abs(wrap_pi(cuc['axis'])) - math.pi / 4.0) < 1e-3       # zone diagonal
+    assert cuc['tier'] == 'long_strip'                                # along a card axis
+    assert abs(math.sin(2.0 * cuc['axis'])) < 1e-4
     zone = parse_zones(rig.cfg)['zone_green']
-    caps = [footprint_capsule(cuc['xy'][0], cuc['xy'][1], 0.26, 0.04, cuc['axis']),
-            footprint_capsule(pear['xy'][0], pear['xy'][1], 0.085, 0.085, None)]
-    for cap in caps:
-        assert capsule_edge_margin(zone, cap) >= 0.0
+    assert _inside_along(zone, cuc['xy'][0], cuc['xy'][1], cuc['axis'], 0.26) >= 0.75
+    pear_cap = footprint_capsule(pear['xy'][0], pear['xy'][1], 0.085, 0.085, None)
+    assert capsule_edge_margin(zone, pear_cap) >= 0.0
     assert pear['footprint_clearance'] >= 0.0
     # Both released place.release_height_flat above the card (bottom = TCP - held offset).
     for e in picks:
-        assert e['release_xyz'][2] - e['grasp_xyz'][2] == pytest.approx(0.015)
+        assert e['release_xyz'][2] - e['grasp_xyz'][2] == pytest.approx(0.01)
     closes = {c[2] for c in rig.arm.commands if c[0] == 'gripper' and c[1] < 0.01}
     assert closes == {2.5}                                            # tasks.L2 default
 
