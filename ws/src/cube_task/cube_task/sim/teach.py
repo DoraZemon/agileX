@@ -65,9 +65,10 @@ def train_knn_from_sim(out: Path, mount: str = 'eye_to_hand', n_scenes: int = 40
                        first_seed: int = 100, k: int = 3,
                        max_distance: float = 3.0,
                        layout: str = 'C') -> Tuple[Path, Optional[float]]:
-    """Train and save a KNN model; return (path, leave-one-out accuracy).
+    """
+    Train and save a KNN model; return (path, leave-one-out accuracy).
 
-    The features do not depend on the table layout; 'C' is the one that lays out all L2 models.
+    The features do not depend on the table layout; 'C' lays out all L2 models.
     """
     from ..perception.classify_knn import KnnClassifier
     X, y, names = collect_sim_samples(range(first_seed, first_seed + n_scenes), mount=mount,
