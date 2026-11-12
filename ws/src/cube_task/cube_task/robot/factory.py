@@ -45,4 +45,6 @@ def make_arm(cfg, clock: Clock, sim_world: Any = None) -> SafeArm:
             LOG.warning('sim_world ignored for robot.backend=pyagxarm')
         from .pyagxarm_arm import PyAgxArm
         inner = PyAgxArm(cfg, clock)
-    return SafeArm(inner, SafetyGuard(cfg), kin=kin, T_flange_tcp=T_flange_tcp)
+    return SafeArm(inner, SafetyGuard(cfg), kin=kin, T_flange_tcp=T_flange_tcp,
+                   table_check_joint_moves=bool(
+                       cfg.get('robot.safety.table_check_joint_moves', True)))

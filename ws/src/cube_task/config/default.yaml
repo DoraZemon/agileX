@@ -10,6 +10,10 @@ site_overlays:
   - config/site/colors.yaml    # written by tools/color_calib
   - config/site/local.yaml     # anything else, e.g. speed_percent, tcp_offset
 
+moveit:                        # motion_ctl moveit bridge (tuned in config/motion.yaml)
+  waypoint_step: 0.15          # rad between executed waypoints
+  max_waypoints: 24
+
 robot:
   backend: pyagxarm            # pyagxarm | sim
   model: piper                 # piper | piper_h | piper_l | piper_x
@@ -51,6 +55,9 @@ robot:
     linear_moves: true
     sim_lin_speed: 0.15        # m/s at 100 percent (sim arm only)
     sim_overhead_s: 0.35       # per motion command (sim arm only)
+  safety:
+    table_check_joint_moves: true   # false: move_joints (MoveIt, motion_ctl joints) checks only
+                                    # the joint limits; TCP moves keep every check
   workspace:                   # TCP limits in the base frame
     x: [0.08, 0.60]
     y: [-0.40, 0.40]

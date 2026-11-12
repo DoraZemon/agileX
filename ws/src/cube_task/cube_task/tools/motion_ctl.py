@@ -35,9 +35,6 @@ from .run_task import (_arm_text, _attach_mujoco, _close_mujoco, _precheck, _say
 
 _LOG = logging.getLogger('cube_task.tools.motion_ctl')
 
-MAX_JOG_RAD = 0.10       # default cap per joint for one `joints` move (about 5.7 deg)
-HARD_JOG_RAD = 0.35      # --max-step above this is refused
-
 
 def _common_parent() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(add_help=False)
@@ -93,8 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='MoveIt bridge: serve FollowJointTrajectory + joint feedback')
     mv.add_argument('--execute', action='store_true',
                     help='really move the arm; without it trajectory goals are refused')
-    mv.add_argument('--waypoint-step', type=float, default=0.15, metavar='RAD',
-                    help='joint distance between executed waypoints (default 0.15)')
+    mv.add_argument('--waypoint-step', type=float, default=None, metavar='RAD',
+                    help='joint distance between executed waypoints '
+                         '(default: moveit.waypoint_step in config/motion.yaml)')
     jt = sub.add_parser('joints', parents=[parent],
                         help='small joint move: --joint N --delta RAD, or --to q1..q6')
     jt.add_argument('--joint', type=int, choices=range(1, 7), metavar='N',
@@ -102,12 +100,17 @@ def build_parser() -> argparse.ArgumentParser:
     jt.add_argument('--delta', type=float, default=None, metavar='RAD',
                     help='relative move of --joint, rad')
     jt.add_argument('--to', type=float, nargs=6, default=None, metavar='Q',
-                    help='absolute joint target q1..q6, rad (every joint is capped too)')
-    jt.add_argument('--max-step', type=float, default=MAX_JOG_RAD, metavar='RAD',
-                    help='refuse any joint moving more than this (default %.2f)' % MAX_JOG_RAD)
+                    help='absolute joint target q1..q6, rad')
     jt.add_argument('--dry-run', action='store_true',
                     help='read the arm, check the joint limits, never move')
     return p
+
+
+def motion_tuning_file():
+    """config/motion.yaml: every motion tuning value in one place (None when absent)."""
+    from ..core.config import package_root
+    p = package_root() / 'config' / 'motion.yaml'
+    return p if p.is_file() else None
 
 
 def _open(args):
@@ -361,13 +364,11 @@ def cmd_gripper(args, s, opts) -> int:
     return EXIT_OK if (g.ok or g.error == 'timeout') else EXIT_FAULT
 
 
-def jog_target(q_now, joint, delta, to, max_step):
-    """Return the 6 joint target of ``joints``; raise Refused when it is unsafe or unclear."""
+def jog_target(q_now, joint, delta, to):
+    """Return the 6 joint target of ``joints``; raise Refused when the request is unclear."""
     q_now = np.asarray(q_now, dtype=float).reshape(-1)
     if q_now.shape[0] != 6 or not np.all(np.isfinite(q_now)):
         raise Refused('current joint angles are unavailable')
-    if not math.isfinite(max_step) or not 0.0 < max_step <= HARD_JOG_RAD:
-        raise Refused('--max-step must be in (0, %.2f] rad' % HARD_JOG_RAD)
     if (to is None) == (joint is None):
         raise Refused('give either --joint N --delta RAD or --to q1..q6')
     if to is not None:
@@ -379,15 +380,11 @@ def jog_target(q_now, joint, delta, to, max_step):
         q[int(joint) - 1] += float(delta)
     if q.shape[0] != 6 or not np.all(np.isfinite(q)):
         raise Refused('the joint target must be 6 finite values')
-    big = np.abs(q - q_now)
-    if float(big.max()) > max_step + 1e-9:
-        raise Refused('joint %d would move %.3f rad, more than --max-step %.3f rad'
-                      % (int(big.argmax()) + 1, float(big.max()), max_step))
     return q
 
 
 def cmd_joints(args, s, opts) -> int:
-    """Move the joints by a small step (SafeArm checks limits, table height and path)."""
+    """Move the joints (SafeArm checks the joint limits; speed comes from the config)."""
     code = _connect(s)
     if code is not None:
         return code
@@ -397,7 +394,7 @@ def cmd_joints(args, s, opts) -> int:
         return EXIT_FAULT
     q_now = np.asarray(jq.value, dtype=float).reshape(-1)
     try:
-        q = jog_target(q_now, args.joint, args.delta, args.to, args.max_step)
+        q = jog_target(q_now, args.joint, args.delta, args.to)
     except Refused as e:
         _say('REFUSED: %s' % e)
         return EXIT_REFUSED
@@ -426,6 +423,12 @@ def cmd_joints(args, s, opts) -> int:
     return EXIT_OK if res.ok else EXIT_FAULT
 
 
+def _moveit_param(args, s, key):
+    """Return a MoveIt bridge setting: the command line first, then config moveit.<key>."""
+    v = getattr(args, key, None)
+    return v if v is not None else s.cfg.get('moveit.' + key)
+
+
 def cmd_moveit(args, s, opts) -> int:
     """Run the MoveIt bridge until Ctrl-C (see robot/moveit_bridge.py)."""
     try:
@@ -448,7 +451,9 @@ def cmd_moveit(args, s, opts) -> int:
             return code
     try:
         bridge = MoveItBridge(s.arm, force=gripper_force_for(s.cfg, args.task),
-                              execute=args.execute, waypoint_step=args.waypoint_step)
+                              execute=args.execute,
+                              waypoint_step=_moveit_param(args, s, 'waypoint_step'),
+                              max_waypoints=int(_moveit_param(args, s, 'max_waypoints')))
     except (ImportError, ValueError) as e:
         _say('REFUSED: %s' % e)
         return EXIT_REFUSED
@@ -471,6 +476,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     """Run one sub-command; returns the exit code documented in the module docstring."""
     args = build_parser().parse_args(argv)
     setup_logging(args.verbose)
+    tuning = motion_tuning_file()
+    if tuning is not None:
+        args.config = [str(tuning)] + list(args.config or [])
     try:
         opened = _open(args)
     except KeyboardInterrupt:
