@@ -1,0 +1,63 @@
+# Site poses taught with teach_poses (20261112_130226), merged over config/default.yaml.
+# Units: m, rad. Re-run teach_poses to change them; previous versions are kept
+# next to this file as poses.bak_<time>.yaml.
+zones:
+  zone_red:
+    center:
+    - 0.5979
+    - 0.3105
+    - -0.0034
+    size:
+    - 0.2
+    - 0.2
+    yaw: 0.0
+    wall_height: 0.0
+  zone_yellow:
+    center:
+    - 0.5837
+    - 0.0147
+    - -0.0051
+    size:
+    - 0.2
+    - 0.2
+    yaw: 0.0
+    wall_height: 0.0
+  zone_green:
+    center:
+    - 0.5731
+    - -0.2824
+    - -0.0075
+    size:
+    - 0.2
+    - 0.2
+    yaw: 0.0
+    wall_height: 0.0
+perception:
+  roi:
+    pick_polygon:
+    - - 0.5627
+      - 0.1552
+    - - 0.5085
+      - 0.1242
+    - - 0.453
+      - -0.0155
+    - - 0.531
+      - -0.1515
+  table:
+    expected_z: -0.0052
+robot:
+  poses:
+    observe_joints:
+    - 0.3032
+    - 1.65633
+    - -1.66852
+    - 0.2536
+    - 0.87298
+    - -0.45406
+    observe_views:
+    - - -0.03599
+      - 1.7583
+      - -1.66852
+      - 0.05109
+      - 0.68834
+      - -0.05932
