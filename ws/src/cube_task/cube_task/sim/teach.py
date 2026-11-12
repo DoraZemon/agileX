@@ -17,7 +17,7 @@ _LOG = logging.getLogger('cube_task.sim.teach')
 
 
 def collect_sim_samples(seeds: Iterable[int], mount: str = 'eye_in_hand', task: str = 'L2',
-                        match_dist: float = 0.02):
+                        match_dist: float = 0.02, layout: str = 'A'):
     """Return (X, y, feature_names) from perception on simulated scenes."""
     from ..camera.factory import make_camera
     from ..core.clock import SimClock
@@ -32,7 +32,8 @@ def collect_sim_samples(seeds: Iterable[int], mount: str = 'eye_in_hand', task: 
     X, y, names = [], [], None
     for s in seeds:
         world, info = make_scenario(task, int(s), mount=mount,
-                                    difficulty='hard' if int(s) % 2 else 'normal')
+                                    difficulty='hard' if int(s) % 2 else 'normal',
+                                    layout=layout)
         cfg = Config(deep_merge(base.data, scenario_config_overlay(info)), base.root,
                      base.sources)
         clock = SimClock()
@@ -62,10 +63,16 @@ def collect_sim_samples(seeds: Iterable[int], mount: str = 'eye_in_hand', task: 
 
 def train_knn_from_sim(out: Path, mount: str = 'eye_in_hand', n_scenes: int = 40,
                        first_seed: int = 100, k: int = 3,
-                       max_distance: float = 3.0) -> Tuple[Path, Optional[float]]:
-    """Train and save a KNN model; return (path, leave-one-out accuracy)."""
+                       max_distance: float = 3.0,
+                       layout: str = 'C') -> Tuple[Path, Optional[float]]:
+    """
+    Train and save a KNN model; return (path, leave-one-out accuracy).
+
+    The features do not depend on the table layout; 'C' lays out all L2 models.
+    """
     from ..perception.classify_knn import KnnClassifier
-    X, y, names = collect_sim_samples(range(first_seed, first_seed + n_scenes), mount=mount)
+    X, y, names = collect_sim_samples(range(first_seed, first_seed + n_scenes), mount=mount,
+                                      layout=layout)
     if len(y) == 0:
         raise RuntimeError('no simulated samples collected')
     knn = KnnClassifier(k=k, max_distance=max_distance)

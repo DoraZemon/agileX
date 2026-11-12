@@ -47,9 +47,9 @@ def add_common_args(p: argparse.ArgumentParser, task_required: bool = False,
                    help='camera mount: eye_in_hand (the only competition camera)')
     p.add_argument('--difficulty', choices=('normal', 'hard'), default='normal',
                    help='sim scenario difficulty')
-    p.add_argument('--layout', choices=('A', 'B', 'S'), default='A',
-                   help='sim table layout: A / B made up, S the 11/12 debug station (taught '
-                        'cards, calibrated wrist camera)')
+    p.add_argument('--layout', choices=('A', 'B', 'C'), default='A',
+                   help='sim table layout: A / B made up, C the measured 11/12 table '
+                        '(calibrated wrist camera)')
     p.add_argument('--extrinsics-error', type=float, nargs=2, default=(0.0, 0.0),
                    metavar=('M', 'DEG'), help='sim: error of the extrinsics estimate')
     p.add_argument('--replay-dir', default='', help='replay mode: directory from capture')

@@ -1,0 +1,41 @@
+# 运控调试参数：motion_ctl 的所有运动表现参数都在这一个文件里，改完直接再跑命令，不用在命令行里重复写。
+# 只有 `python3 -m cube_task motion_ctl ...`（ct motion_ctl ...）读这个文件；run_task 等其他工具不读。
+# 优先级：命令行 --set / --speed / --waypoint-step  >  本文件  >  config/default.yaml 和 config/site/*.yaml。
+#
+# 运控调试时只保留两条限位：
+#   1. 最大速度：robot.speed_percent；
+#   2. 关节最小/最大位置：由机械臂模型的关节限位给出，越限一律拒绝，这里不能关。
+# 其余限位（目标和当前位置差距、桌面高度、关节路径扫描）在 motion_ctl 里默认关闭。
+
+robot:
+  # ---- 限位 1：最大速度（百分比，1..100）。--speed 只能比它低；想更快就改这里 ----
+  speed_percent: 30
+
+  safety:
+    # false：关节运动（MoveIt、motion_ctl joints）只检查关节限位，不再检查桌面高度和关节路径。
+    # 抓取、视觉抓取（pick / vision）走的是 TCP 运动，仍然保留全部检查，不受这个开关影响。
+    table_check_joint_moves: false
+
+  # ---- 运动表现：每条运动指令发出后怎样判定“到位” ----
+  # 觉得每段之间停顿多、不顺：先减小 min_wait_s 和 settle_samples（越小停得越短，判定越松）。
+  motion:
+    pos_tol: 0.006             # TCP 位置到位容差 (m)
+    rot_tol_deg: 4.0           # 姿态到位容差 (deg)
+    settle_samples: 5          # 连续多少个稳定的反馈样本才算停稳
+    stable_eps: 0.0005         # 两个样本间变化小于它算稳定 (m)
+    min_wait_s: 0.25           # 发出指令后至少等这么久再判定
+    timeout_base_s: 6.0        # 单条指令的基础超时
+    timeout_per_m_s: 15.0      # 每米行程增加的超时
+    stall_s: 1.0               # 停住但没到目标超过这么久，判定 stalled
+
+  gripper:
+    force: 1.5                 # 夹爪力，范围 0..3（单位还没和官方确认，先用小力）
+    settle_s: 0.6              # 夹爪指令后等待稳定
+    timeout_s: 3.0
+
+# ---- MoveIt 拖动：轨迹怎样发给机械臂 ----
+# 机械臂每走完一个路点都会等停稳再走下一个，所以路点越少越连贯。
+moveit:
+  waypoint_step: 0.0           # 0 = 只发终点，一次平滑运动（走关节空间直线）；> 0 = 按规划路径取路点，
+                               # 相邻路点间隔这么多 rad，每点停稳再走（一顿一顿）
+  max_waypoints: 24            # 一条轨迹最多发这么多路点（waypoint_step > 0 时）

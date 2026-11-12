@@ -83,6 +83,7 @@ class MoveItBridge:
 
     def __init__(self, arm, force: Optional[float] = None, execute: bool = False,
                  waypoint_step: float = WAYPOINT_STEP, rate_hz: float = 20.0,
+                 max_waypoints: int = MAX_WAYPOINTS,
                  node_name: str = 'cube_task_moveit_bridge'):
         import rclpy
         from control_msgs.action import FollowJointTrajectory
@@ -94,6 +95,7 @@ class MoveItBridge:
         self.force = force
         self.execute = bool(execute)
         self.waypoint_step = float(waypoint_step)
+        self.max_waypoints = int(max_waypoints)
         self.busy = threading.Lock()
         # Shared with the arm (SafeArm passes it on), so a cancel holds a move in progress.
         self._abort = threading.Event()
@@ -170,7 +172,7 @@ class MoveItBridge:
             return self._result(A.Result.INVALID_JOINTS, 'joints %s' % names)
         order = [names.index(j) for j in ARM_JOINTS]
         pts = [[p.positions[i] for i in order] for p in traj.points]
-        way = execution_waypoints(pts, self.waypoint_step)
+        way = execution_waypoints(pts, self.waypoint_step, self.max_waypoints)
         if not way:
             handle.succeed()
             return self._result(A.Result.SUCCESSFUL, '')
@@ -209,11 +211,14 @@ class MoveItBridge:
             handle.abort()
             return self._result(A.Result.INVALID_JOINTS, 'need joint %r' % GRIPPER_JOINT)
         width = float(traj.points[-1].positions[names.index(GRIPPER_JOINT)])
+        self.node.get_logger().info('gripper goal: width %.4f m' % width)
         if not self.busy.acquire(blocking=False):
             handle.abort()
             return self._result(A.Result.INVALID_GOAL, 'another trajectory is executing')
         try:
             g = self.arm.gripper(width, force=self.force, wait=True)
+            self.node.get_logger().info('gripper result: ok=%s width=%s error=%s %s'
+                                        % (g.ok, g.width, g.error, g.detail))
             if g.ok or g.error == 'timeout':
                 handle.succeed()
                 return self._result(A.Result.SUCCESSFUL, '')

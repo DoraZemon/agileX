@@ -43,7 +43,7 @@ PIPER_LIMITS = (
     (-1.745330, 1.745330), (-1.221730, 1.221730), (-2.967060, 2.967060),
 )
 # Same as config/default.yaml robot.tcp_offset (only used for info / reach checks).
-DEFAULT_TCP_OFFSET = (0.0, 0.0, 0.140, 0.0, 0.0, 0.0)
+DEFAULT_TCP_OFFSET = (0.0, 0.0, 0.1425, 0.0, 0.0, 0.0)
 GRIPPER_MAX_WIDTH = 0.100            # config robot.gripper.max_width (100 mm stroke)
 
 DEFAULT_PICK_POLYGON = [[0.15, -0.22], [0.45, -0.22], [0.45, 0.22], [0.15, 0.22]]
@@ -51,7 +51,7 @@ TASKS = ('L1', 'L2')
 MOUNTS = ('eye_in_hand',)               # the competition has only the wrist camera
 DIFFICULTIES = ('normal', 'hard')
 MATERIALS = ('official', 'legacy')
-LAYOUTS = ('A', 'B', 'S')
+LAYOUTS = ('A', 'B', 'C')
 
 # Orbbec-like wide-FOV color camera.
 DEFAULT_INTRINSICS = dict(fx=380.0, fy=380.0, cx=319.5, cy=239.5, width=640, height=480)
@@ -461,22 +461,22 @@ OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
           'pick': [[0.16, -0.18], [0.305, -0.23], [0.305, 0.23], [0.16, 0.18]],
           'eye_in_hand': (0.0, 0.486, -0.495, 0.0, 1.168, 0.0),
           'wrist_yaws': (-0.45, 0.0, 0.45), 'wrist_lift': 0.1},
-    # S: the debug station of 11/12 (cards taught with teach_poses, far from the base:
-    # red and green centers are out of reach, releases go to their near part). The
-    # wrist camera is the hand-eye calibrated one with the camera_info intrinsics;
-    # the gripper hides the image rows below 320. No pick area is marked on the
-    # table: objects lie between the base and the cards and the three views (joint1
-    # turned) are scanned; an L1 object only has to be whole in one of them.
-    'S': {'cards': {'zone_green': (0.5731, -0.2824), 'zone_yellow': (0.5837, 0.0147),
-                    'zone_red': (0.5979, 0.3105)},
+    # C: the real table of 11/12, measured: 900 x 1200 mm, base 50 mm from the near edge;
+    # yellow card 0.60 m straight ahead, red (+y, left) and green (-y, right) 0.30 m beside
+    # it (200 mm cards, 100 mm gaps). No pick area is marked: objects lie between the base
+    # and the cards. The wrist camera is the hand-eye calibrated one (TCP 0.1425) with the
+    # camera_info intrinsics; the gripper hides the image rows below 320 (real images).
+    # Three views (joint1 turned) are scanned; an L1 object only has to be whole in one.
+    'C': {'cards': {'zone_red': (0.60, 0.30), 'zone_yellow': (0.60, 0.0),
+                    'zone_green': (0.60, -0.30)},
           'pick': [[0.20, -0.22], [0.42, -0.22], [0.42, 0.22], [0.20, 0.22]],
           'eye_in_hand': (0.0, 0.15, -0.5, 0.0, 1.1, 0.375),
           'views': ((-0.6, 0.15, -0.5, 0.0, 1.1, 0.375), (0.0, 0.15, -0.5, 0.0, 1.1, 0.375),
                     (0.6, 0.15, -0.5, 0.0, 1.1, 0.375)),
           'l1_any_view': True,
-          'T_flange_camera': ((0.01685, 0.952586, 0.303803, -0.074811),
-                              (-0.999745, 0.011473, 0.019475, -0.010645),
-                              (0.015066, -0.304053, 0.952536, 0.039922),
+          'T_flange_camera': ((0.014608, 0.952816, 0.303196, -0.074707),
+                              (-0.999747, 0.008722, 0.020756, -0.011146),
+                              (0.017132, -0.303422, 0.952702, 0.04232),
                               (0.0, 0.0, 0.0, 1.0)),
           'intrinsics': dict(fx=488.6, fy=488.6, cx=319.8, cy=209.9, width=640, height=480),
           'bottom_px': 160},
@@ -811,7 +811,7 @@ RELEASE_HEIGHT = 0.06
 RETREAT_HEIGHT = 0.10
 APPROACH_HEIGHT = 0.08
 CARD_CHECK_Z = RELEASE_HEIGHT + CUBE_EDGE / 2.0
-MAX_TILT_DEG = 30.0                  # config robot.workspace.max_tilt_from_down_deg
+MAX_TILT_DEG = 50.0                  # config robot.workspace.max_tilt_from_down_deg
 
 
 def official_zones(layout: str = 'A') -> List[SimZone]:

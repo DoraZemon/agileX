@@ -152,7 +152,7 @@ def test_parser_pick_needs_label_and_xyz():
 
 def test_parser_moveit_is_plan_only_by_default():
     a = motion_ctl.build_parser().parse_args(['moveit', '--mode', 'sim'])
-    assert a.cmd == 'moveit' and a.execute is False and a.waypoint_step == 0.0
+    assert a.cmd == 'moveit' and a.execute is False and a.waypoint_step is None
 
 
 def test_moveit_refuses_mujoco_mode():
@@ -174,27 +174,30 @@ def test_gripper_refuses_a_width_above_the_maximum():
 
 def test_jog_target_relative_and_absolute():
     q0 = np.zeros(6)
-    q = motion_ctl.jog_target(q0, 2, 0.05, None, 0.1)
+    q = motion_ctl.jog_target(q0, 2, 0.05, None)
     assert np.allclose(q, [0, 0.05, 0, 0, 0, 0])
-    q = motion_ctl.jog_target(q0, None, None, [0.01] * 6, 0.1)
+    q = motion_ctl.jog_target(q0, None, None, [0.01] * 6)
     assert np.allclose(q, 0.01)
 
 
-@pytest.mark.parametrize('joint,delta,to,step', [
-    (1, 0.5, None, 0.1),             # above --max-step
-    (1, None, None, 0.1),            # --joint without --delta
-    (None, None, None, 0.1),         # nothing given
-    (1, 0.05, [0.0] * 6, 0.1),       # both given
-    (1, 0.05, None, 3.5),            # --max-step above the hard cap
-    (1, float('nan'), None, 0.1),
+def test_jog_target_has_no_step_limit():
+    q = motion_ctl.jog_target(np.zeros(6), 1, 1.2, None)
+    assert np.isclose(q[0], 1.2)
+
+
+@pytest.mark.parametrize('joint,delta,to', [
+    (1, None, None),             # --joint without --delta
+    (None, None, None),          # nothing given
+    (1, 0.05, [0.0] * 6),        # both given
+    (1, float('nan'), None),
 ])
-def test_jog_target_refuses_unsafe_or_unclear_requests(joint, delta, to, step):
+def test_jog_target_refuses_unclear_requests(joint, delta, to):
     with pytest.raises(motion_ctl.Refused):
-        motion_ctl.jog_target(np.zeros(6), joint, delta, to, step)
+        motion_ctl.jog_target(np.zeros(6), joint, delta, to)
 
 
-def test_joints_in_sim_moves_a_little_and_refuses_the_limit():
-    assert motion_ctl.main(['joints', '--mode', 'sim', '--joint', '1', '--delta', '0.05',
+def test_joints_in_sim_moves_and_refuses_only_the_joint_limit():
+    assert motion_ctl.main(['joints', '--mode', 'sim', '--joint', '1', '--delta', '0.5',
                             '-y']) == motion_ctl.EXIT_OK
     code = motion_ctl.main(['joints', '--mode', 'sim', '--joint', '3', '--delta', '0.05',
                             '--dry-run'])
@@ -257,3 +260,19 @@ def test_home_observe_and_dry_run_in_sim():
     finally:
         s.close()
     assert motion_ctl.main(['home', '--mode', 'sim', '-y']) == motion_ctl.EXIT_OK
+
+
+def test_motion_yaml_is_loaded_and_holds_the_tuning_values():
+    from cube_task.core.config import load_config
+    path = motion_ctl.motion_tuning_file()
+    assert path is not None
+    cfg = load_config(extra=[str(path)])
+    assert cfg.get('robot.safety.table_check_joint_moves') is False
+    assert cfg.get('moveit.waypoint_step') == 0.0       # final point only: smooth
+    assert cfg.get('moveit.max_waypoints') >= 2
+    assert 1 <= cfg.get('robot.speed_percent') <= 100
+
+
+def test_default_config_keeps_the_table_check_for_the_competition():
+    from cube_task.core.config import load_config
+    assert load_config().get('robot.safety.table_check_joint_moves') is True

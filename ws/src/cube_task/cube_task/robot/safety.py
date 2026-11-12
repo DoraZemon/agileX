@@ -211,7 +211,8 @@ class SafeArm(ArmInterface):
 
     def __init__(self, arm: ArmInterface, guard: SafetyGuard,
                  kin: Optional[PiperKinematics] = None,
-                 T_flange_tcp: Optional[np.ndarray] = None):
+                 T_flange_tcp: Optional[np.ndarray] = None,
+                 table_check_joint_moves: bool = True):
         if kin is not None and T_flange_tcp is None:
             raise ValueError('SafeArm needs T_flange_tcp when kin is given')
         self._arm = arm
@@ -227,6 +228,9 @@ class SafeArm(ArmInterface):
             self._T_ft = None
             self._T_tf = None
         self._table_z: Optional[float] = None
+        # False: move_joints checks only the joint limits
+        # (config robot.safety.table_check_joint_moves)
+        self._table_check_joint_moves = bool(table_check_joint_moves)
 
     # ----------------------------------------------------------- properties
     @property
@@ -525,7 +529,7 @@ class SafeArm(ArmInterface):
         return None
 
     def move_joints(self, q: Sequence[float], timeout: Optional[float] = None) -> MotionResult:
-        """Check joint limits, final TCP height and the joint path, then forward."""
+        """Check the joint limits (plus TCP height and path unless disabled), then forward."""
         gate = self._gate()
         if gate is not None:
             return gate
@@ -539,16 +543,17 @@ class SafeArm(ArmInterface):
             bad: List[str] = self._kin.limit_violations(qt)
             if bad:
                 return _rejected('joint limits: ' + ', '.join(bad))
-            Tf = self._kin.fk(qt)
-            ok, reason = self._tcp_above_table(Tf @ self._T_ft, Tf)
-            if not ok:
-                return _rejected('joint target: ' + reason)
-            q_now = self._current_joints()
-            if q_now is None:
-                return _rejected('current joint angles unavailable')
-            ok, reason = self._check_joint_path(q_now, qt)
-            if not ok:
-                return _rejected(reason)
+            if self._table_check_joint_moves:
+                Tf = self._kin.fk(qt)
+                ok, reason = self._tcp_above_table(Tf @ self._T_ft, Tf)
+                if not ok:
+                    return _rejected('joint target: ' + reason)
+                q_now = self._current_joints()
+                if q_now is None:
+                    return _rejected('current joint angles unavailable')
+                ok, reason = self._check_joint_path(q_now, qt)
+                if not ok:
+                    return _rejected(reason)
         return self._arm.move_joints(qt, timeout=timeout)
 
 

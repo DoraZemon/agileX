@@ -16,9 +16,9 @@ source /opt/ros/humble/setup.bash
 source "$WS/install/setup.bash"
 
 L="$WS/src/agx_arm_ros/src/agx_arm_moveit/launch"
-# TCP 0.140 m past the flange: keep equal to robot.tcp_offset z in the task config
+# TCP 0.1425 m past the flange: keep equal to robot.tcp_offset z in the task config
 ARGS=(arm_type:=piper effector_type:=agx_gripper follow:=true
-      "tcp_offset:=[0.0, 0.0, 0.140, 0.0, 0.0, 0.0]")
+      "tcp_offset:=[0.0, 0.0, 0.1425, 0.0, 0.0, 0.0]")
 
 pids=()
 trap 'kill "${pids[@]}" 2>/dev/null; wait 2>/dev/null' EXIT INT TERM

@@ -23,7 +23,7 @@
 | 全量测试 | 47 个失败、1030 通过、106 跳过（11/12，已合并 main；main 上是 51 个失败）。失败集中在官方 L2 场景生成（P0-2 未完成）和依赖它的端到端测试；`test_can_up_missing_interface_mentions_the_official_script` 只在没初始化 `third_party` 子模块时失败 |
 | 默认夹爪宽度 | `robot.gripper.max_width` 已改为 0.100 m（行程 100 mm） |
 | 已按官方文档定下 | 只有 1 台腕端大白（`camera.mount: eye_in_hand`）；内参读 `camera_info`，手眼外参自己用 `calib_points` 标（不提供标定文件）；L1 方块 50 mm、红/绿/黄；3 张 200 × 200 mm 卡纸；物体须完全进入卡纸，黄瓜投影 ≥ 2/3；机械臂经 USB 转 CAN 直连，上电前确认 J1 零点刻度线对齐 |
-| 待现场确认 | TCP 长度（配置 0.140 m，手册 0.1425 m，两处要同步改）、夹爪力单位、相机话题名、取物区与卡纸位置 |
+| 待现场确认 | TCP 长度（已按手册和实测设为 0.1425 m，改时 default.yaml 与 moveit_rviz.sh 要同步）、夹爪力单位、相机话题名 |
 
 仿真只验证流程，不代表真实相机和物料上的识别精度；颜色标定、外参标定和 KNN 训练必须在现场做。
 

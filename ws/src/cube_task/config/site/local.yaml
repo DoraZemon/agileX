@@ -9,3 +9,11 @@ perception:
     # 取物区不固定：每个观察位的整幅图都找方块，只排除卡纸（放置区）。
     # teach_poses 的 p 仍要做（定桌面高度 expected_z），它写的多边形被这里覆盖。
     pick_polygon: null
+
+robot:
+  workspace:                   # 11/12 实测桌面：卡纸中心 (0.60, 0, ±0.30)，要放宽工作区
+    x: [0.08, 0.75]
+    y: [-0.55, 0.55]
+    r_max: 0.75
+    max_tilt_free_deg: 180        # 空中姿态（预抓/预放/抬起/撤退）的倾斜上限，规划器读这个值
+    max_tilt_from_down_deg: 180   # 取消抓取/放置的倾斜限制（只剩关节限位和桌面高度）
