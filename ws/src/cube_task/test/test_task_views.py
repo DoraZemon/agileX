@@ -130,6 +130,7 @@ def _actions(rig):
 
 def test_objects_seen_only_from_other_views_are_all_placed():
     rig = _rig([('red', 0.25, -0.15), ('green', 0.30, 0.0), ('blue', 0.30, 0.16)])
+    rig.cfg.set('runner.scan_all_first', True)
     rep = rig.runner().run()
     assert rep.ok and rep.placed == 3 and rep.stop_reason == 'done'
     acts = _actions(rig)
@@ -161,6 +162,7 @@ def test_a_target_far_from_the_last_pick_is_picked_without_a_new_view(radius, re
     rig = _rig([('red', 0.25, -0.15), ('blue', 0.30, 0.16)])   # views 0 and 2, far apart
     rig.cfg.set('tasks.L1.required', 2)
     rig.cfg.set('runner.rescan_radius_m', radius)
+    rig.cfg.set('runner.scan_all_first', True)
     rep = rig.runner().run()
     assert rep.ok and rep.placed == 2
     acts = _actions(rig)
@@ -195,3 +197,12 @@ def test_one_view_keeps_the_single_view_loop():
     rep = rig.runner().run()
     assert rep.ok and not [e for e in rig.logger.kinds('decision')
                            if e['action'] == 'view_scanned']
+
+
+def test_the_first_pick_does_not_wait_for_a_full_scan():
+    rig = _rig([('red', 0.25, -0.15), ('green', 0.30, 0.0), ('blue', 0.30, 0.16)])
+    rep = rig.runner().run()
+    assert rep.ok and rep.placed == 3
+    acts = _actions(rig)
+    first_pick = [i for i, e in enumerate(acts) if e['action'] == 'pick'][0]
+    assert len(acts[:first_pick]) == 1                  # one view, then the first pick

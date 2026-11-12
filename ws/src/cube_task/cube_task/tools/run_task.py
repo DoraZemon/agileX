@@ -394,12 +394,38 @@ def _confirm(args: argparse.Namespace, cfg, opts: SimpleNamespace) -> bool:
              ' as a DRY RUN (hover only, the gripper never closes)' if args.dry_run else ''))
     _say('Keep a hand on the e-stop. During the run: p / space = abort and hold, '
          'e = electronic e-stop, Ctrl-C = stop.')
+    if bool(cfg.get('runner.start_on_enter', True)):
+        # The Enter at the observe pose is the real start gate (nothing is timed or
+        # picked before it): no extra y first. Ctrl-C / e still stop the arm.
+        _say('Moving to the observe pose now; the run starts only when you press Enter there.')
+        return True
     return Ui(headless=True).confirm('Start on the REAL robot?')
+
+
+def _leave_teach_mode(s) -> bool:
+    """
+    Real mode: when the controller is in drag-teach mode, offer the way back to CAN control.
+
+    The self check fails on a teaching controller and used to end the run there; this
+    reuses the typed-confirmation helpers of the on-site tools (teach button,
+    c = take CAN control, x = exit_teach_mode). Does nothing when the arm is not teaching.
+    """
+    from .onsite import ensure_motion_ready, is_teaching
+    from .ui import Ui
+    try:
+        if not is_teaching(s.arm):
+            return True
+    except Exception:  # noqa: B902 - the self check reports an unreadable arm
+        return True
+    return ensure_motion_ready(Ui(headless=True), s.arm, 'run the task')
 
 
 def _precheck(args: argparse.Namespace, s) -> bool:
     """Real mode: run the full self check before asking, so a refusal enables nothing."""
     from ..task.selfcheck import self_check
+    if not _leave_teach_mode(s):
+        _say('REFUSED: the arm is still in drag-teach mode; nothing was enabled or moved.')
+        return False
     ok, msgs = self_check(s.cfg, args.task, s.arm, s.camera, 'real', clock=s.clock)
     for m in msgs:
         if not m.startswith('[ OK ]'):

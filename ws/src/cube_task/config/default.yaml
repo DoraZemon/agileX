@@ -285,6 +285,7 @@ runner:
   # After a placement only the views with an object this close to the picked one are
   # captured again before the next pick (the rest were not touched); -1 = every view
   rescan_radius_m: 0.12
+  scan_all_first: false        # false: pick right after the first view that shows a target
   # An elongated class (place.nominal_footprint) seen shorter than this x its nominal
   # length is cut by the image border or the gripper: not picked from that view
   partial_length_ratio: 0.6

@@ -242,6 +242,8 @@ class TaskRunner:
         # After a placement only the views with objects this close to the picked one are
         # captured again (the others were not touched); negative = every view.
         self.rescan_radius = float(cfg.get('runner.rescan_radius_m', 0.12))
+        #: false: pick as soon as one view shows a target; true: scan every view first
+        self.scan_all_first = bool(cfg.get('runner.scan_all_first', False))
         self.save_images = bool(cfg.get('logging.save_images', True)) and bool(
             cfg.get('logging.image_every_observation', True))
         tcp = cfg.get('robot.tcp_offset', None)
@@ -1190,7 +1192,7 @@ class TaskRunner:
                 return
             merged = merge_view_detections(scene, stale, self.view_merge, partial=self._partial)
             target = None
-            if len(seen) == n:
+            if len(seen) == n or (seen and not self.scan_all_first):
                 target = self._select(self._candidates_from(merged), merged)
             if target is None or view_of(target) in stale:
                 if target is not None:
