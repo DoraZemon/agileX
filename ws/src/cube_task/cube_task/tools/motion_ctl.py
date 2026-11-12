@@ -278,17 +278,14 @@ def _precheck_arm_only(args, s) -> bool:
 
 
 def _arm_selfcheck(args, s) -> bool:
-    from ..task.selfcheck import self_check
-    ok, msgs = self_check(s.cfg, args.task, s.arm, None, 'real', clock=s.clock)
-    # Arm-only: a missing camera / extrinsics is not a reason to refuse a manual pick.
-    bad = [m for m in msgs if m.startswith('[FAIL]')
-           and not any(k in m.lower() for k in ('camera', 'extrinsic', 'frame', 'intrinsic'))]
+    from ..task.selfcheck import arm_self_check
+    ok, msgs = arm_self_check(s.cfg, s.arm, 'real', clock=s.clock)
     for m in msgs:
         if not m.startswith('[ OK ]'):
             _say('self check %s' % m)
-    if bad:
+    if not ok:
         _say('REFUSED: the self check failed; nothing was enabled or moved.')
-    return not bad
+    return ok
 
 
 def cmd_vision(args, s, opts) -> int:

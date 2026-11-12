@@ -125,3 +125,21 @@ def test_unreachable_zone_fails():
 def test_unknown_task():
     ok, msgs = self_check(make_cfg(), 'L9', mode='sim')
     assert not ok and _has(msgs, 'unknown task')
+
+
+def test_arm_self_check_ignores_task_items_but_not_the_arm():
+    from cube_task.task.selfcheck import arm_self_check
+    clock = SimClock()
+    arm = FakeSafeArm(clock)
+    cfg = make_cfg()
+    cfg.set('zones', {})                                  # no zones, no class_to_zone, ...
+    cfg.set('tasks.L1.class_to_zone', {})
+    cfg.set('camera.extrinsics_file', '')
+    ok, msgs = arm_self_check(cfg, arm, 'real', clock=clock)
+    assert ok, msgs
+    arm.healthy = False
+    ok, msgs = arm_self_check(cfg, arm, 'real', clock=clock)
+    assert not ok and _has(msgs, 'arm not healthy')
+    cfg.set('robot.tcp_offset', [0, 0, 0.5, 0, 0, 0])
+    ok, msgs = arm_self_check(cfg, None, 'sim')
+    assert not ok and _has(msgs, 'tcp_offset')

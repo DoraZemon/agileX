@@ -327,6 +327,24 @@ def _check_arm(cfg, rep: _Report, arm, clock) -> None:
         rep.fail('gripper feedback is stale')
 
 
+def arm_self_check(cfg, arm, mode: str = 'real', clock=None) -> Tuple[bool, List[str]]:
+    """
+    Check only what moving the arm by hand-given targets needs; return (ok, messages).
+
+    robot.* config (tcp_offset, gripper, observe pose) and, in real mode, arm
+    health and fresh joint / gripper feedback. Zones, class_to_zone, extrinsics
+    and classifier assets are task items (self_check) and are not looked at.
+    """
+    rep = _Report()
+    _check_robot_config(cfg, rep, mode)
+    if mode == 'real':
+        if arm is None:
+            rep.fail('no arm given')
+        else:
+            _check_arm(cfg, rep, arm, clock)
+    return not rep.failed, rep.messages
+
+
 def camera_pose_for_check(cfg, ext, arm) -> Tuple[Optional[np.ndarray], str]:
     """Return (T_base_camera, '') or (None, why) using the current flange pose."""
     try:
