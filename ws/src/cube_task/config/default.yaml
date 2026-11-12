@@ -77,10 +77,10 @@ robot:
 
 camera:
   backend: ros                 # ros | file | sim
-  # eye_to_hand | eye_in_hand. The competition has only the organizers' wrist camera.
+  # The competition has only the organizers' wrist camera; nothing else is supported.
   mount: eye_in_hand
-  # eye_to_hand: T_base_camera. eye_in_hand: T_flange_camera. SITE: no official file;
-  # calibrate on the shared arm with tools/calib_points.
+  # T_flange_camera (hand-eye result). SITE: no official file; calibrate on the shared
+  # arm with scripts/handeye.sh (tools/calib_points).
   extrinsics_file: config/site/extrinsics.yaml
   # Inline alternative used by simulation: {mount: ..., matrix: 4x4}. Wins over the file.
   extrinsics_inline: null
@@ -286,8 +286,7 @@ sim:
   use_site_knn: false          # sim: use perception.classifier.knn.model_file instead of a sim model
   # Filled by sim/scenarios.scenario_config_overlay():
   intrinsics: null
-  T_base_camera: null          # true camera pose (eye_to_hand)
-  T_flange_camera: null        # true camera pose (eye_in_hand)
+  T_flange_camera: null        # true wrist camera pose in the flange frame
   extrinsics_error: [0.0, 0.0] # [translation m, rotation deg] error of the estimate
 
 logging:

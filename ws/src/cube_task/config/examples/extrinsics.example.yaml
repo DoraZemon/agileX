@@ -1,23 +1,25 @@
-# config/site/extrinsics.yaml 的格式。组委会不提供标定文件和手眼参数（答疑 Q8/Q9），
-# 正常由 calib_points 在自己的调试时段里标定后写入；这里的数值只是例子
-# （仿真里的固定相机：在基座前方 0.70 m、高 0.62 m，向下看取物区）。
+# config/site/extrinsics.yaml 的格式：腕端相机（比赛唯一的相机）的手眼标定 T_flange_camera。
+# 组委会不提供标定文件和手眼参数（答疑 Q8/Q9），正常由 scripts/handeye.sh（calib_points）在自己的
+# 调试时段里标定后写入；这里的数值只是例子（仿真里的腕端相机：法兰 -x 方向 70 mm、法兰面前 30 mm，
+# 光轴和工具 z 平行）。
 #
-# matrix 把相机坐标（彩色光学坐标系：x 右、y 下、z 朝前）变到 parent_frame：p_parent = matrix @ p_camera，单位 m。
-#   eye_to_hand（固定相机）：parent_frame base   -> T_base_camera
-#   eye_in_hand（腕部相机）：parent_frame flange -> T_flange_camera（法兰 = link6）。相对 TCP 的外参写
-#     parent_frame tcp，并且必须加 tcp_offset: [x, y, z, roll, pitch, yaw]（m, rad，标定时驱动用的 TCP 偏移）
-# 官方给的是反方向（基座 -> 相机）时，把 matrix 换成键名 T_camera_base，加载时自动求逆。
+# matrix 把相机坐标（彩色光学坐标系：x 右、y 下、z 朝前）变到法兰坐标系（link6）：
+#   p_flange = matrix @ p_camera，单位 m。
+# 相对 TCP 的外参写 parent_frame tcp，并且必须加 tcp_offset: [x, y, z, roll, pitch, yaw]（m, rad，
+# 标定时驱动用的 TCP 偏移），加载时换算成 T_flange_camera。
+# 反方向（法兰 -> 相机）时把 matrix 换成键名 T_camera_flange，加载时自动求逆。
 # 也可以写 translation + quaternion (x, y, z, w)，或 xyz + rpy / rpy_deg（R = Rz Ry Rx）。
 # rpy 是弧度（绝对值大于 2π 拒绝加载），度写 rpy_deg。
-# child_frame 必须以 _optical_frame 结尾；官方给的是 camera_link 时写 child_frame: camera_link，再加
+# child_frame 必须以 _optical_frame 结尾；标定的是 camera_link 时写 child_frame: camera_link，再加
 # T_link_optical（ros2 run tf2_ros tf2_echo camera_link camera_color_optical_frame 打印的 4x4）。
 # 同时写几种时它们必须一致；手改其中一种就删掉其他的。格式说明见 docs/配置说明.md 第 4 节。
-mount: eye_to_hand
-parent_frame: base
+# 固定相机的标定（T_base_camera、mount eye_to_hand、parent_frame base）会被拒绝加载。
+mount: eye_in_hand
+parent_frame: flange
 child_frame: camera_color_optical_frame
 matrix:
-  - [0.0000,  0.8403, -0.5421, 0.7000]
-  - [1.0000,  0.0000,  0.0000, 0.0000]
-  - [0.0000, -0.5421, -0.8403, 0.6200]
-  - [0.0000,  0.0000,  0.0000, 1.0000]
+  - [0.0000, 1.0000, 0.0000, -0.0700]
+  - [-1.0000, 0.0000, 0.0000, 0.0000]
+  - [0.0000, 0.0000, 1.0000, 0.0300]
+  - [0.0000, 0.0000, 0.0000, 1.0000]
 source: example_only

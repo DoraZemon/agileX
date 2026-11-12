@@ -7,7 +7,7 @@ Helpers for running the task stack on the MuJoCo physics scene.
   labeled with the scene's ground truth (as sim/teach.py does for the
   kinematic renderer). Used to check that the simulation KNN model, trained
   on the kinematic renderer, still classifies MuJoCo renders (measured
-  2026-11-06: 95/95 eye_to_hand and 96/96 eye_in_hand samples of seeds
+  2026-11-06: 96/96 eye_in_hand samples of seeds
   200-215 correct), so --mode mujoco uses that model.
 - PhysicsMonitor: a frame hook that records what the physics did to every
   object (grasped, released, landed, pushed, rolled, dropped) as run-log
@@ -80,7 +80,7 @@ def observe_frame(cfg: Any, mw: Any, clock: Any, settle_s: float = 0.3):
     finally:
         cam.stop()
     arm.connect()                       # feedback only; nothing moves
-    T_bf = arm.get_flange_pose().value if mw.info['mount'] == 'eye_in_hand' else None
+    T_bf = arm.get_flange_pose().value
     return frame, camera_pose_in_base(extrinsics_from_cfg(cfg), T_bf)
 
 
@@ -103,7 +103,7 @@ def match_objects(mw: Any, detections: Sequence[Any], match_dist: float = 0.02
     return out
 
 
-def collect_samples(seeds: Iterable[int], mount: str = 'eye_to_hand', task: str = 'L2',
+def collect_samples(seeds: Iterable[int], mount: str = 'eye_in_hand', task: str = 'L2',
                     match_dist: float = 0.02, base_cfg: Any = None):
     """
     Return (X, y, feature_names) from perception on MuJoCo renders of scenarios.

@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from test_e2e_common import describe, SimRig, slow
 
-MOUNTS = ('eye_to_hand', 'eye_in_hand')
+MOUNTS = ('eye_in_hand',)
 
 
 @pytest.mark.parametrize('mount', MOUNTS)
@@ -29,8 +29,7 @@ def test_l1_more_seeds(seed):
             assert rep.ok, describe(rep, rig)
 
 
-@pytest.mark.parametrize('seed,mount', [(0, 'eye_to_hand'), (1, 'eye_to_hand'),
-                                        (0, 'eye_in_hand')])
+@pytest.mark.parametrize('seed,mount', [(0, 'eye_in_hand'), (1, 'eye_in_hand')])
 def test_l1_hard_never_places_distractor_or_wrong_zone(seed, mount):
     # Touching blocks + a yellow distractor. The merged pair may be missed (being fixed
     # elsewhere), so only the safety properties are asserted here.
@@ -69,7 +68,7 @@ def test_l1_succeeds_with_extrinsics_error(mount):
 
 
 def test_dry_run_never_closes_the_gripper_and_places_nothing():
-    with SimRig('L1', 0, 'eye_to_hand') as rig:
+    with SimRig('L1', 0, 'eye_in_hand') as rig:
         rep = rig.run(dry_run=True)
         assert not rep.ok and rep.placed == 0
         assert [p.stage for p in rep.picks] == ['dry_run_done'] * 3, describe(rep, rig)
@@ -84,13 +83,13 @@ def test_dry_run_never_closes_the_gripper_and_places_nothing():
 
 
 def test_skills_dry_run_hover_poses_are_reachable_without_workaround():
-    with SimRig('L1', 0, 'eye_to_hand') as rig:
+    with SimRig('L1', 0, 'eye_in_hand') as rig:
         rep = rig.run(dry_run=True)
         assert [p.stage for p in rep.picks] == ['dry_run_done'] * 3, describe(rep, rig)
 
 
 def test_deadline_stops_with_timeout_and_no_late_pick():
-    with SimRig('L1', 0, 'eye_to_hand', sets=['tasks.L1.time_limit_s=35']) as rig:
+    with SimRig('L1', 0, 'eye_in_hand', sets=['tasks.L1.time_limit_s=35']) as rig:
         rep = rig.run()
         assert rep.stop_reason == 'timeout' and not rep.ok, describe(rep, rig)
         min_time = float(rig.cfg.get('runner.min_time_for_pick_s'))
@@ -103,7 +102,7 @@ def test_deadline_stops_with_timeout_and_no_late_pick():
 
 
 def test_targets_pick_only_the_given_labels_in_order():
-    with SimRig('L1', 0, 'eye_to_hand', sets=['tasks.L1.required=2']) as rig:
+    with SimRig('L1', 0, 'eye_in_hand', sets=['tasks.L1.required=2']) as rig:
         rep = rig.run(targets=['blue', 'red'])
         assert rep.ok, describe(rep, rig)
         assert [p.label for p in rep.picks] == ['blue', 'red']

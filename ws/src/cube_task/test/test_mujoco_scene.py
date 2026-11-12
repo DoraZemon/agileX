@@ -41,7 +41,7 @@ W, H = 640, 480
 _CACHE = {}
 
 
-def _build(task, mount='eye_to_hand', difficulty='normal', seed=1, cached=False):
+def _build(task, mount='eye_in_hand', difficulty='normal', seed=1, cached=False):
     """Build a scene (fresh unless cached=True; cached worlds must not be changed)."""
     key = (task, mount, difficulty, seed)
     if cached and key in _CACHE:
@@ -141,10 +141,10 @@ def test_piper_geometry_and_meta():
     assert os.path.dirname(mw.xml_path) == os.path.realpath(ASSETS)
 
 
-COMBOS = ([(t, mo, d, 1) for t in ('L1', 'L2') for mo in ('eye_to_hand', 'eye_in_hand')
+COMBOS = ([(t, mo, d, 1) for t in ('L1', 'L2') for mo in ('eye_in_hand',)
            for d in ('normal', 'hard')]
-          + [('L1', 'eye_to_hand', 'normal', 2), ('L2', 'eye_to_hand', 'normal', 2),
-             ('L2', 'eye_to_hand', 'hard', 3)])
+          + [('L1', 'eye_in_hand', 'normal', 2), ('L2', 'eye_in_hand', 'normal', 2),
+             ('L2', 'eye_in_hand', 'hard', 3)])
 
 
 @pytest.mark.parametrize('task,mount,difficulty,seed', COMBOS)
@@ -156,8 +156,7 @@ def test_scene_compiles_and_objects_settle(task, mount, difficulty, seed):
     assert set(mw.zones) == set(info['zones'])
     cams = mw.meta['cameras']
     assert sc.OVERVIEW_CAM in cams and sc.TOP_CAM in cams
-    assert mw.task_camera == (sc.WRIST_CAM if mount == 'eye_in_hand' else sc.TASK_CAM)
-    assert (sc.TASK_CAM in cams) == (mount == 'eye_to_hand')
+    assert mw.task_camera == sc.WRIST_CAM and 'task_cam' not in cams     # no fixed camera
     start = {o.name: mw.object_com(o.name) for o in mw.objects}
     for o in world.objects:                              # resting on the table at start
         lo = mw.object_pose(o.name)[2, 3]
@@ -191,7 +190,7 @@ def test_scene_compiles_and_objects_settle(task, mount, difficulty, seed):
 
 def test_object_masses_and_materials():
     mw = _build('L1', difficulty='hard', cached=True)
-    world, _info = make_scenario('L1', 1, 'eye_to_hand', 'hard')
+    world, _info = make_scenario('L1', 1, 'eye_in_hand', 'hard')
     for o, rec in zip(world.objects, mw.objects):
         assert rec.mass == pytest.approx(700.0 * o.size[0] * o.size[1] * o.size[2], rel=1e-6)
         assert 0.015 < rec.mass < 0.05
@@ -221,7 +220,7 @@ def test_build_is_deterministic():
 
 # ---------------------------------------------------------------- cameras
 def test_camera_frame_conversion_roundtrip():
-    R = make_scenario('L1', 1)[1]['T_base_camera'][:3, :3]
+    R = make_scenario('L1', 1)[1]['T_base_camera_observe'][:3, :3]
     Rm = sc.optical_to_mujoco(R)
     assert np.allclose(Rm[:, 2], -R[:, 2]) and np.allclose(Rm[:, 1], -R[:, 1])
     assert np.allclose(Rm[:, 0], R[:, 0])
@@ -245,16 +244,6 @@ def _check_table_depth(mw, camera, T_base_camera):
         assert abs(depth[v, u] - expect[v, u]) < 0.001
 
 
-def test_task_cam_depth_matches_table_geometry():
-    mw = _build('L1', cached=True)
-    T = mw.camera_pose(sc.TASK_CAM)
-    assert pose_error(T, mw.T_base_camera)[0] < 1e-9
-    assert pose_error(T, np.asarray(mw.info['T_base_camera']))[0] < 1e-9
-    assert np.allclose(T, mw.info['T_base_camera'], atol=1e-9)
-    assert mw.intrinsics.fx == pytest.approx(mw.info['intrinsics'].fy)
-    _check_table_depth(mw, sc.TASK_CAM, T)
-
-
 def test_wrist_cam_follows_link6_and_depth_matches():
     mw = _build('L2', mount='eye_in_hand')
     _set_arm(mw, mw.info['observe_joints'])
@@ -273,17 +262,14 @@ def _chroma(rgb):
     return c / max(float(np.linalg.norm(c)), 1e-9)
 
 
-@pytest.mark.parametrize('task,mount', [('L1', 'eye_to_hand'), ('L2', 'eye_in_hand')])
-def test_projection_with_optical_intrinsics_hits_object(task, mount):
+@pytest.mark.parametrize('task', ['L1', 'L2'])
+def test_projection_with_optical_intrinsics_hits_object(task):
     """Project object tops with the overlay's optical-frame camera model; check the pixel."""
-    mw = _build(task, mount=mount, cached=(mount == 'eye_to_hand'))
-    world, info = make_scenario(task, 1, mount)
-    if mount == 'eye_in_hand':
-        _set_arm(mw, info['observe_joints'])
-        b6 = mujoco.mj_name2id(mw.model, mujoco.mjtObj.mjOBJ_BODY, 'link6')
-        T = make_T(mw.data.xmat[b6].reshape(3, 3), mw.data.xpos[b6]) @ mw.T_flange_camera
-    else:
-        T = mw.T_base_camera
+    mw = _build(task)
+    world, info = make_scenario(task, 1)
+    _set_arm(mw, info['observe_joints'])
+    b6 = mujoco.mj_name2id(mw.model, mujoco.mjtObj.mjOBJ_BODY, 'link6')
+    T = make_T(mw.data.xmat[b6].reshape(3, 3), mw.data.xpos[b6]) @ mw.T_flange_camera
     intr = mw.intrinsics
     assert (intr.width, intr.height) == (W, H)
     rgb, _depth, geom = _render(mw, mw.task_camera)
@@ -437,10 +423,9 @@ def test_held_objects_needs_both_fingers():
 
 
 # ----------------------------------------------------------------- config
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
-def test_config_overlay_merges_over_default(mount):
-    task = 'L2'
-    mw = _build(task, mount=mount, cached=(mount == 'eye_to_hand'))
+def test_config_overlay_merges_over_default():
+    task, mount = 'L2', 'eye_in_hand'
+    mw = _build(task, mount=mount, cached=True)
     info = mw.info
     base = load_config(use_overlays=False)
     data = deep_merge(base.data, scenario_config_overlay(info))
@@ -464,12 +449,11 @@ def test_config_overlay_merges_over_default(mount):
     assert (k['fx'], k['fy'], k['cx'], k['cy']) == pytest.approx(
         (f, f, (k['width'] - 1) / 2.0, (k['height'] - 1) / 2.0))
     ext = extrinsics_from_cfg(cfg)
-    true = mw.T_base_camera if mount == 'eye_to_hand' else mw.T_flange_camera
+    true = mw.T_flange_camera
     assert ext.mount == mount and np.allclose(ext.T, true, atol=1e-9)
-    key = 'sim.T_base_camera' if mount == 'eye_to_hand' else 'sim.T_flange_camera'
+    key = 'sim.T_flange_camera'
     assert np.allclose(cfg.get(key), true, atol=1e-12)
-    other = 'sim.T_flange_camera' if mount == 'eye_to_hand' else 'sim.T_base_camera'
-    assert cfg.get(other) is None
+    assert cfg.get('sim.T_base_camera') is None
     # Perturbed estimate: same direction as the kinematic sim overlay, true pose unchanged.
     over = mw.config_overlay(extrinsics_error=(0.01, 1.0))
     ref = scenario_config_overlay(info, extrinsics_error=(0.01, 1.0))

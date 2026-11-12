@@ -14,7 +14,7 @@ from cube_task.perception.factory import make_classifier
 from cube_task.perception.pipeline import Perception
 from cube_task.perception.segment import cap_band, depth_spikes
 from cube_task.sim.scenarios import make_scenario, scenario_config_overlay
-from cube_task.sim.sim_camera import SimCamera
+from test_task_fakes import still_wrist_camera
 
 
 def test_depth_spikes_marks_isolated_near_pixels_only():
@@ -68,8 +68,8 @@ def _errors(task, seeds, frac, **over):
                      base.sources)
         for k, v in over.items():
             cfg.set(k, v)
-        T = np.array(info['T_base_camera'], dtype=float)
-        cam = SimCamera(world, SimClock(), info['intrinsics'], T_base_camera=T, seed=s)
+        T = np.array(info['T_base_camera_observe'], dtype=float)
+        cam = still_wrist_camera(world, SimClock(), info['intrinsics'], T, seed=s)
         cam.start()
         fr = capture_averaged(cam, 3)
         clf = make_classifier(cfg, task) if task == 'L1' else None

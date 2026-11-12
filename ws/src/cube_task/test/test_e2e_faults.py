@@ -1,4 +1,4 @@
-"""End-to-end fault handling in simulation (L1, eye_to_hand): faults injected mid-run."""
+"""End-to-end fault handling in simulation (L1, wrist camera): faults injected mid-run."""
 from __future__ import annotations
 
 from cube_task.tools.sim_bench import FaultCamera, GraspMissArm
@@ -9,7 +9,7 @@ SECOND_PICK_CALL = 16
 
 
 def test_comm_loss_mid_run_stops_as_fault_without_more_motion():
-    with SimRig('L1', 0, 'eye_to_hand') as rig:
+    with SimRig('L1', 0, 'eye_in_hand') as rig:
         rig.sim_arm.inject('comm_loss', at_call=SECOND_PICK_CALL)
         rep = rig.run()
         assert rep.stop_reason == 'fault' and not rep.ok, describe(rep, rig)
@@ -23,7 +23,7 @@ def test_comm_loss_mid_run_stops_as_fault_without_more_motion():
 
 
 def test_grasp_miss_is_retried_and_the_round_completes():
-    with SimRig('L1', 0, 'eye_to_hand') as rig:
+    with SimRig('L1', 0, 'eye_in_hand') as rig:
         arm = GraspMissArm(rig.arm, at_call=1, close_width=0.0)
         rep = rig.run(arm=arm)
         assert arm.fired and rig.sim_arm.fault_log[0]['kind'] == 'grasp_miss'
@@ -33,7 +33,7 @@ def test_grasp_miss_is_retried_and_the_round_completes():
 
 
 def test_drop_is_retried_and_the_round_completes():
-    with SimRig('L1', 0, 'eye_to_hand') as rig:
+    with SimRig('L1', 0, 'eye_in_hand') as rig:
         rig.sim_arm.inject('drop')
         rep = rig.run()
         assert rig.sim_arm.fault_log and rig.sim_arm.fault_log[0]['kind'] == 'drop'
@@ -43,7 +43,7 @@ def test_drop_is_retried_and_the_round_completes():
 
 
 def test_motion_timeout_is_recovered_and_the_round_completes():
-    with SimRig('L1', 0, 'eye_to_hand') as rig:
+    with SimRig('L1', 0, 'eye_in_hand') as rig:
         rig.sim_arm.inject('timeout', at_call=5)
         rep = rig.run()
         assert rig.sim_arm.fault_log, 'timeout fault was not used'
@@ -53,7 +53,7 @@ def test_motion_timeout_is_recovered_and_the_round_completes():
 
 
 def test_camera_none_frames_mid_run_recover():
-    with SimRig('L1', 0, 'eye_to_hand') as rig:
+    with SimRig('L1', 0, 'eye_in_hand') as rig:
         cam = FaultCamera(rig.camera, at_call=4, count=3)
         rep = rig.run(camera=cam)
         assert cam.fired

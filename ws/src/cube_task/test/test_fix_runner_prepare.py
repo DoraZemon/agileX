@@ -83,15 +83,6 @@ def test_self_check_defers_eye_in_hand_pick_area_away_from_observe_pose():
     assert not ok and any(m.startswith('[FAIL]') and 'pick polygon' in m for m in msgs), msgs
 
 
-def test_self_check_eye_to_hand_pick_area_failure_stays_a_failure():
-    clock = SimClock()
-    cfg = make_cfg('L1')
-    ext = FakeExt(LOOK_AWAY, 'eye_to_hand')
-    ok, msgs = self_check(cfg, 'L1', arm=FakeSafeArm(clock), camera=FakeCamera(clock),
-                          mode='real', extrinsics=ext, clock=clock)
-    assert not ok and any(m.startswith('[FAIL]') and 'pick polygon' in m for m in msgs)
-
-
 def test_check_pick_area_needs_a_frame_and_a_view():
     clock = SimClock()
     cfg = make_cfg('L1', camera__mount='eye_in_hand')
@@ -123,7 +114,7 @@ def test_real_arm_runs_with_the_wrist_camera_and_refuses_a_fixed_one():
     rig.cfg.set('robot.backend', 'pyagxarm')
     rep = rig.runner(mode='real').run()
     assert rep.ok and rep.placed == 1, rig.logger.kinds('self_check')
-    rig = Rig('L1')
+    rig = Rig('L1', camera__mount='eye_to_hand')
     rig.cfg.set('robot.backend', 'pyagxarm')
     rig.world.add(make_det('red', 0.25, -0.10))
     rep = rig.runner(mode='real').run()

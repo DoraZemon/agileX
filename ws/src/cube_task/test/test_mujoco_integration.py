@@ -38,7 +38,7 @@ pytestmark = [
 ]
 
 
-def _rig(task='L1', seed=0, mount='eye_to_hand'):
+def _rig(task='L1', seed=0, mount='eye_in_hand'):
     """Scene + config + clock with the arm at the observe pose, settled."""
     world, info = make_scenario(task, seed, mount, 'normal')
     cfg, mw = scene_config(info, sim_world=world)
@@ -51,10 +51,9 @@ def _rig(task='L1', seed=0, mount='eye_to_hand'):
     return world, info, cfg, mw, clock, arm
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
-def test_camera_geometry_matches_the_scene(mount):
+def test_camera_geometry_matches_the_scene():
     """Intrinsics, extrinsics and depth agree with the physics state (no noise)."""
-    world, info, cfg, mw, clock, arm = _rig('L1', 0, mount)
+    world, info, cfg, mw, clock, arm = _rig('L1', 0)
     cam = MujocoCamera(mw, clock, noise_std=0.0, dropout=0.0, color_noise=0.0)
     cam.start()
     try:
@@ -65,11 +64,8 @@ def test_camera_geometry_matches_the_scene(mount):
         assert mw.sim.time == pytest.approx(frame.stamp, abs=mw.model.opt.timestep)
         assert frame.color.shape == (480, 640, 3) and frame.depth.dtype == np.float32
         T_bc = frame.meta['T_base_camera_true']
-        if mount == 'eye_in_hand':
-            T_bf = arm.get_flange_pose().value
-            assert np.allclose(T_bf @ mw.T_flange_camera, T_bc, atol=1e-9)
-        else:
-            assert np.allclose(mw.T_base_camera, T_bc, atol=1e-9)
+        T_bf = arm.get_flange_pose().value
+        assert np.allclose(T_bf @ mw.T_flange_camera, T_bc, atol=1e-9)
         # The top center of every cube projects to a pixel whose depth is its z.
         K, T_cb = frame.intrinsics.K(), inv_T(T_bc)
         sizes = {o.name: o.size for o in world.objects}
@@ -94,7 +90,7 @@ def test_camera_geometry_matches_the_scene(mount):
 
 
 def test_camera_noise_is_seeded_and_faults_work():
-    _world, _info, cfg, mw, clock, _arm = _rig('L1', 0, 'eye_to_hand')
+    _world, _info, cfg, mw, clock, _arm = _rig('L1', 0)
     frames = []
     for _ in range(2):
         cam = MujocoCamera(mw, clock, cfg, seed=5)
@@ -123,7 +119,7 @@ def test_camera_noise_is_seeded_and_faults_work():
 
 def test_physics_monitor_explains_misplaced_objects():
     """A cube moved into a wrong zone and one knocked off the table get causes."""
-    world, info, cfg, mw, clock, _arm = _rig('L1', 0, 'eye_to_hand')
+    world, info, cfg, mw, clock, _arm = _rig('L1', 0)
     mon = PhysicsMonitor(mw).start()
     names = [o.name for o in world.objects]
     wrong = next(z for z in mw.zones if z != info['class_to_zone'][mw.object(names[0]).label])
@@ -149,7 +145,7 @@ def test_physics_monitor_explains_misplaced_objects():
 def test_factories_need_the_mujoco_world():
     from cube_task.camera.factory import make_camera
     from cube_task.robot.factory import make_arm
-    _world, _info, cfg, mw, clock, _arm = _rig('L1', 0, 'eye_to_hand')
+    _world, _info, cfg, mw, clock, _arm = _rig('L1', 0)
     with pytest.raises(ValueError, match='MujocoWorld'):
         make_camera(cfg, clock, sim_world=None)
     with pytest.raises(ValueError, match='MujocoWorld'):
@@ -243,7 +239,7 @@ class _FakeWall:
 def test_viewer_syncs_at_real_speed_and_is_optional(monkeypatch):
     import mujoco.viewer
     from cube_task.sim.mujoco.run import Viewer
-    _world, _info, _cfg, mw, _clock, _arm = _rig('L1', 0, 'eye_to_hand')
+    _world, _info, _cfg, mw, _clock, _arm = _rig('L1', 0)
     monkeypatch.delenv('DISPLAY', raising=False)
     monkeypatch.delenv('WAYLAND_DISPLAY', raising=False)
     assert Viewer(mw).open() is False                     # no display: run without it

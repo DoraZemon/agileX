@@ -234,15 +234,8 @@ def _check_robot_config(cfg, rep: _Report, mode: str) -> None:
     if T is None:
         rep.fail('no observe pose: set robot.poses.observe_joints (teach_poses) or observe_tcp')
         return
-    mount = cfg.get('camera.mount', 'eye_to_hand')
-    poly = cfg.get('perception.roi.pick_polygon', None) or []
     if mode == 'real':
-        if mount == 'eye_to_hand' and len(poly) >= 3 and \
-                _point_in_polygon(float(T[0, 3]), float(T[1, 3]), poly):
-            rep.fail('observe_tcp is above the pick area: with eye_to_hand the arm would be '
-                     'in the camera view; teach robot.poses.observe_joints')
-        else:
-            rep.warn('robot.poses.observe_joints is not taught; using observe_tcp')
+        rep.warn('robot.poses.observe_joints is not taught; using observe_tcp')
     why = _in_workspace(cfg, float(T[0, 3]), float(T[1, 3]), float(T[2, 3]))
     if why:
         rep.fail('observe_tcp outside the workspace: %s' % why)
@@ -528,11 +521,10 @@ def self_check(cfg, task: str, arm=None, camera=None, mode: str = 'real',
                  "table); teach it with teach_poses 'p'")
     ext = _check_extrinsics(cfg, rep, extrinsics)
     _check_assets(cfg, task, rep)
+    if cfg.get('camera.mount', None) != 'eye_in_hand':
+        rep.fail('camera.mount is %r: the competition camera is the wrist camera, set '
+                 'camera.mount: eye_in_hand' % (cfg.get('camera.mount', None),))
     if mode == 'real':
-        if (cfg.get('robot.backend', None) == 'pyagxarm'
-                and cfg.get('camera.mount', None) != 'eye_in_hand'):
-            rep.fail('camera.mount is %r: the competition camera is the wrist camera, set '
-                     'camera.mount: eye_in_hand' % (cfg.get('camera.mount', None),))
         if arm is None:
             rep.warn('no arm given: arm checks skipped')
         else:

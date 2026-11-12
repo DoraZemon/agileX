@@ -64,7 +64,7 @@ def _errors(res, world):
     return out
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
+@pytest.mark.parametrize('mount', ['eye_in_hand'])
 @pytest.mark.parametrize('seed', [0, 4])
 def test_touching_blocks_are_localized(mount, seed):
     world, info = make_scenario('L1', seed, mount=mount, difficulty='hard')
@@ -84,7 +84,7 @@ def test_touching_blocks_are_localized(mount, seed):
 
 
 @pytest.mark.parametrize('mount,seed',
-                         [('eye_to_hand', 4), ('eye_to_hand', 23), ('eye_in_hand', 4)])
+                         [('eye_in_hand', 4), ('eye_in_hand', 23)])
 def test_hard_l1_run_places_all_blocks(mount, seed, tmp_path):
     world, info = make_scenario('L1', seed, mount=mount, difficulty='hard')
     cfg, clock, arm, cam = _setup(world, info)

@@ -37,7 +37,8 @@ def world():
 
 def make(clock=None, **kw):
     clock = clock or SimClock()
-    cam = SimCamera(world(), clock, INTR, T_base_camera=T_CAM, **kw)
+    cam = SimCamera(world(), clock, INTR, T_flange_camera=np.eye(4), arm=FakeArm(clock, T_CAM),
+                    **kw)
     cam.start()
     return cam, clock
 
@@ -74,7 +75,8 @@ def test_newer_than_beyond_timeout_returns_none():
 
 
 def test_not_started_returns_none():
-    cam = SimCamera(world(), SimClock(), INTR, T_base_camera=T_CAM)
+    clock = SimClock()
+    cam = SimCamera(world(), clock, INTR, T_flange_camera=np.eye(4), arm=FakeArm(clock, T_CAM))
     assert cam.get_frame() is None
     cam.start()
     assert cam.get_frame() is not None
@@ -132,12 +134,13 @@ def test_eye_in_hand_follows_flange():
 def test_constructor_validation_and_determinism():
     with pytest.raises(ValueError):
         SimCamera(world(), SimClock(), INTR)
-    with pytest.raises(ValueError):
-        SimCamera(world(), SimClock(), INTR, T_base_camera=T_CAM, T_flange_camera=np.eye(4))
+    with pytest.raises(TypeError):
+        SimCamera(world(), SimClock(), INTR, T_base_camera=T_CAM)    # no fixed camera
     with pytest.raises(ValueError):
         SimCamera(world(), SimClock(), INTR, T_flange_camera=np.eye(4))
     with pytest.raises(ValueError):
-        SimCamera(world(), SimClock(), INTR, T_base_camera=T_CAM, dropout=2.0)
+        SimCamera(world(), SimClock(), INTR, T_flange_camera=np.eye(4),
+                  arm=FakeArm(SimClock(), T_CAM), dropout=2.0)
     a, _ = make(seed=3)
     b, _ = make(seed=3)
     fa, fb = a.get_frame(), b.get_frame()

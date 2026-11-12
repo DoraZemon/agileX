@@ -11,7 +11,7 @@ import pytest
 
 from cube_task.core.extrinsics import Extrinsics, load_extrinsics
 from cube_task.core.transforms import inv_T, make_T, pose6_to_T, pose_error, transform_points
-from cube_task.core.types import Frame
+from cube_task.core.types import CameraIntrinsics, Frame
 from cube_task.sim.render import render_rgbd
 from cube_task.sim.scenarios import default_intrinsics, look_at, make_scenario
 from cube_task.sim.world import SimObject, SimWorld
@@ -19,7 +19,7 @@ from cube_task.tools import calib_points as cp
 from cube_task.tools.ui import Ui
 
 INTR = default_intrinsics()
-T_BC = look_at((0.70, 0.0, 0.62), (0.30, 0.0, 0.0))     # the simulated eye-to-hand camera
+T_BC = look_at((0.70, 0.0, 0.62), (0.30, 0.0, 0.0))     # a camera pose for rendering
 T_FC = make_T(cv2.Rodrigues(np.array([0.02, -0.03, -1.55]))[0], (-0.07, 0.01, 0.03))
 
 
@@ -55,8 +55,8 @@ def _pairs(mount: str, P: np.ndarray, noise: float = 0.0, seed: int = 2,
 
 
 def _truth(mount: str) -> np.ndarray:
-    """Return T_base_camera (eye_to_hand) or T_flange_camera (eye_in_hand) used for _pairs."""
-    return T_BC if mount == 'eye_to_hand' else T_FC
+    """Return the T_flange_camera used for _pairs."""
+    return T_FC
 
 
 def _render(objects, T_bc=T_BC, seed=None, noise=0.0, dropout=0.0) -> Frame:
@@ -103,18 +103,18 @@ def _scripted(answers: dict):
 
 
 # ------------------------------------------------------------------ solving
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
+@pytest.mark.parametrize('mount', ['eye_in_hand'])
 def test_solve_extrinsics_exact(mount):
     ext, res = cp.solve_extrinsics(_pairs(mount, _table_points()), mount, stamp='now')
     dp, dr = pose_error(ext.T, _truth(mount))
     assert dp < 1e-9 and dr < 1e-9
     assert np.all(res < 1e-9) and ext.rms < 1e-9
     assert isinstance(ext, Extrinsics) and ext.mount == mount and ext.source == 'calib_points'
-    assert ext.parent_frame == ('base' if mount == 'eye_to_hand' else 'flange')
+    assert ext.parent_frame == 'flange'
     assert ext.stamp == 'now'
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
+@pytest.mark.parametrize('mount', ['eye_in_hand'])
 def test_solve_extrinsics_noise(mount):
     ext, res = cp.solve_extrinsics(_pairs(mount, _table_points(n=10), noise=0.0005), mount)
     dp, dr = pose_error(ext.T, _truth(mount))
@@ -123,7 +123,7 @@ def test_solve_extrinsics_noise(mount):
     assert cp.find_outliers(res) == []
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
+@pytest.mark.parametrize('mount', ['eye_in_hand'])
 def test_outlier_flagged_and_dropping_it_recovers(mount):
     pairs = _pairs(mount, _table_points(n=7), noise=0.0003)
     pairs[3].p_base = pairs[3].p_base + np.array([0.012, -0.006, 0.0])   # bad touch
@@ -135,7 +135,7 @@ def test_outlier_flagged_and_dropping_it_recovers(mount):
     assert dp < 0.002 and math.degrees(dr) < 0.3 and cp.find_outliers(res2) == []
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
+@pytest.mark.parametrize('mount', ['eye_in_hand'])
 def test_solve_refuses_too_few_or_collinear_points(mount):
     with pytest.raises(ValueError, match='at least 4'):
         cp.solve_extrinsics(_pairs(mount, _table_points(n=3)), mount)
@@ -168,7 +168,7 @@ def test_find_outliers_rules():
     assert cp.find_outliers([0.001, 0.05]) == []
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
+@pytest.mark.parametrize('mount', ['eye_in_hand'])
 def test_prediction_error_catches_a_bad_touch(mount):
     pairs = _pairs(mount, _table_points(n=5))
     assert cp.prediction_error(pairs[:2], pairs[2], mount) is None
@@ -403,13 +403,13 @@ def test_parse_command(text, expect):
 def _planes_for(pairs, mount, T_true):
     """Attach the true table plane (z = 0 in base) in each measurement's camera frame."""
     for p in pairs:
-        T_bc = T_true if mount == 'eye_to_hand' else p.T_base_flange_cam @ T_true
+        T_bc = p.T_base_flange_cam @ T_true
         n_c = T_bc[:3, :3].T @ np.array([0.0, 0.0, 1.0])
         p.plane_normal, p.plane_d = n_c, float(T_bc[2, 3])
     return pairs
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
+@pytest.mark.parametrize('mount', ['eye_in_hand'])
 def test_sanity_report(mount):
     pairs = _planes_for(_pairs(mount, _table_points()), mount, _truth(mount))
     ext, _res = cp.solve_extrinsics(pairs, mount)
@@ -418,11 +418,7 @@ def test_sanity_report(mount):
     text = '\n'.join(lines).replace('-0.0', '0.0')
     assert warns == []
     assert 'tilt 0.00 deg from base z, z = 0.0 mm at the pick-area center' in text
-    if mount == 'eye_to_hand':
-        assert 'camera position in base: [700.0, 0.0, 620.0] mm' in text
-        assert 'optical axis 32.8 deg from the table normal, camera 620 mm above' in text
-    else:
-        assert 'camera in the flange frame: [-70.0, 10.0, 30.0] mm' in text
+    assert 'camera in the flange frame: [-70.0, 10.0, 30.0] mm' in text
     bad = Extrinsics(ext.T @ make_T(cv2.Rodrigues(np.array([0.09, 0.0, 0.0]))[0], (0, 0, 0)),
                      mount, rms=0.004)
     _lines, warns = cp.sanity_report(bad, pairs, poly, expected_z=0.0, expected_tol=0.01)
@@ -433,14 +429,13 @@ def test_sanity_report(mount):
 
 
 def test_compare_extrinsics():
-    a = Extrinsics(T_BC, 'eye_to_hand', source='old.yaml')
+    a = Extrinsics(T_BC, 'eye_in_hand', source='old.yaml')
     moved = T_BC.copy()
     moved[:3, 3] += [0.003, 0.0, -0.004]
-    dp, dr, text = cp.compare_extrinsics(Extrinsics(moved, 'eye_to_hand'), a)
+    dp, dr, text = cp.compare_extrinsics(Extrinsics(moved, 'eye_in_hand'), a)
     assert dp == pytest.approx(0.005) and dr == pytest.approx(0.0, abs=1e-6)
     assert text == 'change from the previous extrinsics (old.yaml): 5.0 mm, 0.00 deg'
     other = Extrinsics(T_FC, 'eye_in_hand')
-    assert cp.compare_extrinsics(other, a)[0] is None
     T_ft = pose6_to_T([0, 0, 0.14, 0, 0, 0])
     tcp = Extrinsics(inv_T(T_ft) @ T_FC, 'eye_in_hand', parent_frame='tcp')
     assert cp.compare_extrinsics(other, tcp, T_ft)[0] == pytest.approx(0.0, abs=1e-9)
@@ -448,7 +443,7 @@ def test_compare_extrinsics():
 
 
 def test_text_helpers_and_preview():
-    pairs = _pairs('eye_to_hand', _table_points(n=4))
+    pairs = _pairs('eye_in_hand', _table_points(n=4))
     table = cp.residual_table(pairs, [0.0001, 0.0002, 0.0001, 0.009], [3])
     assert 'OUTLIER?' in table.splitlines()[5] and 'residual mm' in table
     assert 'RMS 4.50 mm, median 0.15 mm, max 9.00 mm over 4 points' in table
@@ -486,8 +481,7 @@ def _run(tmp_path, args, answers, name='run'):
     out = io.StringIO()
     fn = _scripted(answers)
     ui = Ui(headless=True, input_fn=fn, output=out, preview_dir=str(tmp_path / name))
-    code = cp.main(['--mode', 'sim', '--mount', 'eye_to_hand', '--headless', '--log-dir',
-                    str(tmp_path)] + args, ui=ui)
+    code = cp.main(['--mode', 'sim', '--headless', '--log-dir', str(tmp_path)] + args, ui=ui)
     return code, out.getvalue(), fn
 
 
@@ -500,12 +494,11 @@ def _last_session(tmp_path):
     return json.loads(files[-1].read_text(encoding='utf-8'))
 
 
-def _true_pose(mount):
-    info = make_scenario('L1', 0, mount=mount)[1]
-    return info['T_base_camera'] if mount == 'eye_to_hand' else info['T_flange_camera']
+def _true_pose(mount='eye_in_hand'):
+    return make_scenario('L1', 0, mount=mount)[1]['T_flange_camera']
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
+@pytest.mark.parametrize('mount', ['eye_in_hand'])
 def test_main_sim_recovers_the_true_camera_pose(tmp_path, mount):
     code, text, fn = _run(tmp_path, ['--mount', mount], {'w = write': ['w']})
     assert code == 0, text
@@ -513,17 +506,16 @@ def test_main_sim_recovers_the_true_camera_pose(tmp_path, mount):
     dp, dr = pose_error(ext.T, _true_pose(mount))
     assert dp < 0.002 and math.degrees(dr) < 0.3, (dp, math.degrees(dr))
     assert ext.mount == mount and ext.source == 'calib_points' and ext.rms < 0.0015
-    assert ext.stamp and ext.parent_frame == ('base' if mount == 'eye_to_hand' else 'flange')
+    assert ext.stamp and ext.parent_frame == 'flange'
     assert 'keys written:' in text and '    matrix' in text and '    rms' in text
     assert 'RMS' in text and '[sim] error against the true camera pose' in text
     assert 'to use it: --set camera.extrinsics_file=' in text
     sess = _last_session(tmp_path)
     assert sess['mount'] == mount and len(sess['pairs']) == 6
     assert sess['result']['source'] == 'calib_points'
-    if mount == 'eye_in_hand':        # the view pose changed between points
-        views = {tuple(np.round(np.asarray(p['T_base_flange_cam'])[:3, 3], 4))
-                 for p in sess['pairs']}
-        assert len(views) > 3
+    views = {tuple(np.round(np.asarray(p['T_base_flange_cam'])[:3, 3], 4))
+             for p in sess['pairs']}
+    assert len(views) > 3             # the view pose changed between points
     assert list((tmp_path / 'calib_points').glob('*/point_01.jpg'))
     assert (tmp_path / 'run' / 'calib_points.jpg').is_file()
     assert fn.queues['w = write'] == []
@@ -535,7 +527,7 @@ def test_main_sim_bad_touch_warned_dropped_and_replaced(tmp_path):
     assert code == 0, text
     assert 'WARNING: point #5: the touch is 1' in text and 'dropped point #5' in text
     assert 'OUTLIER?' in text
-    dp, dr = pose_error(_result(tmp_path).T, _true_pose('eye_to_hand'))
+    dp, dr = pose_error(_result(tmp_path).T, _true_pose())
     assert dp < 0.002 and math.degrees(dr) < 0.3
     assert [p['id'] for p in _last_session(tmp_path)['pairs']] == [1, 2, 3, 4, 6, 7]
     assert all(not q for q in fn.queues.values())
@@ -562,11 +554,11 @@ def test_main_sim_quit_then_resume(tmp_path):
     assert code == 0, text
     assert 'resumed 4 points' in text and 'point #5 recorded' in text
     assert len(_last_session(tmp_path)['pairs']) == 5
-    assert _result(tmp_path).mount == 'eye_to_hand'
+    assert _result(tmp_path).mount == 'eye_in_hand'
 
 
 def test_main_sim_aruco_eye_in_hand(tmp_path):
-    code, text, _fn = _run(tmp_path, ['--mount', 'eye_in_hand', '--target', 'aruco',
+    code, text, _fn = _run(tmp_path, ['--target', 'aruco',
                                       '--frames', '2', '--points', '5'], {'w = write': ['w']})
     assert code == 0, text
     assert 'marker id 0' in text and 'CENTER OF THE MARKER' in text
@@ -617,11 +609,18 @@ def _fake_real_hardware(monkeypatch) -> dict:
 
 
 def _place_next(state) -> None:
-    """Operator: put the cube on the next spot and move the arm out of the view."""
+    """Operator: arm to the observe pose, cube on the next spot the wrist camera sees whole."""
     from cube_task.tools import onsite
-    x, y = next(state['spots'])
-    state['cube'].place_upright(x, y, 0.2, 0.0)
-    onsite.sim_drag_joints(state['s'].arm, state['s'].cfg.get('robot.poses.observe_joints'))
+    s = state['s']
+    q = s.cfg.get('robot.poses.observe_joints')
+    onsite.sim_drag_joints(s.arm, q)
+    T_bc = s.arm.kin.fk(q) @ np.asarray(s.cfg.get('sim.T_flange_camera'), dtype=float)
+    intr = CameraIntrinsics.from_dict(s.cfg.get('sim.intrinsics'))
+    for x, y in state['spots']:
+        state['cube'].place_upright(x, y, 0.2, 0.0)
+        if cp.sim_visible(state['cube'], T_bc, intr, 10.0, cp.SIM_FINGER_ROWS):
+            return
+    raise AssertionError('no spot left that the wrist camera sees')
 
 
 def _touch(state) -> None:
@@ -656,7 +655,7 @@ def test_main_real_mode_prompts_against_simulated_hardware(tmp_path, monkeypatch
     out = io.StringIO()
     ui = Ui(headless=True, input_fn=operator, output=out, preview_dir=str(tmp_path / 'p'))
     code = cp.main(['--points', '4', '--frames', '2', '--headless', '--log-dir', str(tmp_path),
-                    '--mount', 'eye_to_hand', '--site-dir', str(tmp_path / 'site')], ui=ui)
+                    '--site-dir', str(tmp_path / 'site')], ui=ui)
     text = out.getvalue()
     assert code == 0, text
     assert 'removed point #2' in text and 'point #3 cancelled' in text
@@ -664,7 +663,7 @@ def test_main_real_mode_prompts_against_simulated_hardware(tmp_path, monkeypatch
     assert 'The tool never moves the arm' in text and '[sim' not in text
     assert place_answers == [] and touch_answers == []
     ext = load_extrinsics(tmp_path / 'site' / 'extrinsics.yaml')
-    dp, dr = pose_error(ext.T, _true_pose('eye_to_hand'))
+    dp, dr = pose_error(ext.T, _true_pose())
     assert dp < 0.002 and math.degrees(dr) < 0.3
     assert [p['id'] for p in _last_session(tmp_path)['pairs']] == [1, 3, 4, 5]
 
@@ -704,11 +703,11 @@ def test_main_real_mode_window_keys(tmp_path, monkeypatch):
     out = io.StringIO()
     ui = _WindowUi(keys, {'w = write': ['w']}, out)
     code = cp.main(['--points', '4', '--frames', '2', '--log-dir', str(tmp_path),
-                    '--mount', 'eye_to_hand', '--site-dir', str(tmp_path / 'site')], ui=ui)
+                    '--site-dir', str(tmp_path / 'site')], ui=ui)
     text = out.getvalue()
     assert code == 0, text
     assert cp.WINDOW_PLACE in text and 'Enter or space in the preview window' in text
     assert ui.keys == [] and ui.shown >= 8
     dp, dr = pose_error(load_extrinsics(tmp_path / 'site' / 'extrinsics.yaml').T,
-                        _true_pose('eye_to_hand'))
+                        _true_pose())
     assert dp < 0.002 and math.degrees(dr) < 0.3

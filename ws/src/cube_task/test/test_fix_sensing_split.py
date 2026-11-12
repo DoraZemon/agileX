@@ -13,7 +13,7 @@ from cube_task.core.types import CameraIntrinsics
 from cube_task.perception.pipeline import Perception
 from cube_task.perception.segment import SegmentParams, split_jump, SPLIT_JUMP_MAX_M
 from cube_task.sim.scenarios import make_scenario, scenario_config_overlay
-from cube_task.sim.sim_camera import SimCamera
+from test_task_fakes import still_wrist_camera
 
 ELONGATED = ('carrot', 'cucumber', 'banana', 'corn')
 
@@ -47,11 +47,11 @@ def _fragments(seeds, back=0.0, fx=380.0, noise_mult=1.0, k=None):
                      base.sources)
         if k is not None:
             cfg.set('perception.segmentation.split_jump_noise_k', k)
-        T = np.array(info['T_base_camera'], dtype=float)
+        T = np.array(info['T_base_camera_observe'], dtype=float)
         T[:3, 3] -= back * T[:3, 2]                  # move the camera back along its axis
         intr = CameraIntrinsics(fx, fx, 319.5, 239.5, 640, 480)
-        cam = SimCamera(world, SimClock(), intr, T_base_camera=T,
-                        noise_std=0.0008 * noise_mult, dropout=0.002, seed=s)
+        cam = still_wrist_camera(world, SimClock(), intr, T,
+                                 noise_std=0.0008 * noise_mult, dropout=0.002, seed=s)
         cam.start()
         res = Perception(cfg).process(capture_averaged(cam, 3), T)
         assert res.table is not None, res.warnings

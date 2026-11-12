@@ -146,8 +146,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--count', type=int, default=0, help='process N frames, then exit')
     p.add_argument('--average', type=int, default=1,
                    help='median depth of N frames per view (static scenes)')
-    p.add_argument('--no-arm', action='store_true',
-                   help='real mode: do not connect the arm (eye_to_hand only)')
     return p
 
 
@@ -188,7 +186,7 @@ class _Viewer:
         idx = next_index(self.out)
         pose = read_pose(self.s.arm) if self.s.arm is not None else None
         extra: Dict[str, Any] = {'session': 'view', 'task': self.s.task,
-                                 'mount': str(self.cfg.get('camera.mount', 'eye_to_hand'))}
+                                 'mount': str(self.cfg.get('camera.mount', 'eye_in_hand'))}
         if pose is not None:
             extra.update(pose.to_extra())
         save_frame(self.out, idx, frame, extra=extra)
@@ -207,12 +205,9 @@ def main(argv=None, ui=None) -> int:
     cfg_world_info = load_cfg_for(args)
     cfg = cfg_world_info[0]
     ui = make_ui(args, cfg, 'view', ui)
-    mount = str(cfg.get('camera.mount', 'eye_to_hand'))
-    use_arm = args.mode != 'real' or not args.no_arm
-    with open_session(args, arm=use_arm, camera=True, perception=False,
+    with open_session(args, arm=True, camera=True, perception=False,
                       connect=args.mode != 'real', cfg_world_info=cfg_world_info) as s:
-        if not connect_arm_readonly(s, ui, required=mount == 'eye_in_hand',
-                                    why='eye_in_hand camera poses'):
+        if not connect_arm_readonly(s, ui, required=True, why='wrist camera poses'):
             return 2
         if args.mode == 'sim':
             ok, why = go_observe(s.arm, cfg, MotionGuard(ui, 'sim', 100))

@@ -14,11 +14,10 @@ height above the table in mm). The tool averages the offsets over the objects
 - camera estimate) and its spread, and with --apply (after confirmation) writes
 corrected extrinsics (backup of the old file kept):
 
-    eye_to_hand: T_base_camera <- Trans(d) @ T_base_camera
-    eye_in_hand: T_flange_camera <- inv(T_base_flange_obs) @ Trans(d)
-                                    @ T_base_flange_obs @ T_flange_camera
+    T_flange_camera <- inv(T_base_flange_obs) @ Trans(d)
+                       @ T_base_flange_obs @ T_flange_camera
 
-(the eye_in_hand rule is the equivalent correction at the observe pose). --point
+(the equivalent correction of the wrist camera at the observe pose). --point
 X Y Z hovers above a base-frame point instead (TCP / arm check, nothing written).
 The arm always returns to the observe pose at the end with the gripper open.
 
@@ -114,8 +113,6 @@ def plan_text(point: Optional[Sequence[float]], hover: float, speed: int, mount:
 
 def correction_formula(ext) -> str:
     """Return the update rule --apply uses for the mount / parent frame of ext."""
-    if ext.parent_frame == 'base':
-        return 'eye_to_hand: T_base_camera <- Trans(d) @ T_base_camera'
     P = 'T_base_flange_obs' if ext.parent_frame == 'flange' else \
         '(T_base_flange_obs @ T_flange_tcp)'
     return ('eye_in_hand: %s <- inv(%s) @ Trans(d) @ %s @ %s (the equivalent correction at '
@@ -171,13 +168,11 @@ def parent_pose_in_base(ext, T_base_flange: Optional[np.ndarray] = None,
     """
     Return T_base_<ext.parent_frame> at the observe pose.
 
-    base -> identity; flange -> T_base_flange; tcp -> T_base_flange @
-    T_flange_tcp. Raises ValueError when a needed pose is missing.
+    flange -> T_base_flange; tcp -> T_base_flange @ T_flange_tcp. Raises
+    ValueError when a needed pose is missing.
     """
-    if ext.parent_frame == 'base':
-        return np.eye(4)
     if T_base_flange is None:
-        raise ValueError('the eye_in_hand correction needs the flange pose at the observe pose')
+        raise ValueError('the wrist camera correction needs the flange pose at the observe pose')
     T = np.asarray(T_base_flange, dtype=float)
     if ext.parent_frame == 'flange':
         return T.copy()
@@ -193,7 +188,6 @@ def corrected_transform(T_parent_camera: np.ndarray, d: Sequence[float],
 
     T_new = inv(P) @ Trans(d) @ P @ T with P = T_base_parent, so the camera
     pose in the base frame at P moves by d and its rotation is unchanged.
-    eye_to_hand (P = identity): T_base_camera <- Trans(d) @ T_base_camera.
     """
     P = np.eye(4) if T_base_parent is None else np.asarray(T_base_parent, dtype=float)
     return inv_T(P) @ trans(d) @ P @ np.asarray(T_parent_camera, dtype=float)
@@ -575,7 +569,7 @@ class _Verifier:
                 return EXIT_SETUP
             ui.say('extrinsics: %s' % self.ext.describe())
         ui.say(plan_text(self.point, self.hover, self.speed,
-                         str(self.cfg.get('camera.mount', 'eye_to_hand'))))
+                         str(self.cfg.get('camera.mount', 'eye_in_hand'))))
         if not ensure_motion_ready(ui, self.arm, purpose='move above the objects'):
             ui.say('cancelled: nothing moved')
             return EXIT_CANCELLED

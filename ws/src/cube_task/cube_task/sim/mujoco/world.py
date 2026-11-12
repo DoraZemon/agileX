@@ -277,7 +277,7 @@ class MujocoWorld:
     # -------------------------------------------------------------- camera
     @property
     def task_camera(self) -> str:
-        """Return the MuJoCo name of the task camera ('task_cam' or 'wrist_cam')."""
+        """Return the MuJoCo name of the task camera ('wrist_cam')."""
         return str(self.meta['camera'])
 
     @property
@@ -286,14 +286,8 @@ class MujocoWorld:
         return CameraIntrinsics.from_dict(self.meta['intrinsics'])
 
     @property
-    def T_base_camera(self) -> Optional[np.ndarray]:
-        """Return the fixed task camera pose (eye_to_hand), optical frame, or None."""
-        T = self.meta.get('T_base_camera')
-        return None if T is None else np.array(T, dtype=float)
-
-    @property
     def T_flange_camera(self) -> Optional[np.ndarray]:
-        """Return the wrist camera pose in link6 (eye_in_hand), optical frame, or None."""
+        """Return the wrist camera pose in link6, optical frame, or None."""
         T = self.meta.get('T_flange_camera')
         return None if T is None else np.array(T, dtype=float)
 
@@ -320,7 +314,7 @@ class MujocoWorld:
         fingertip), robot.gripper.max_width (the scene's stroke, see
         sim.mujoco.gripper_max_width), perception.table.expected_z, the
         zones with their real floors, sim.intrinsics of the rendered camera,
-        sim.T_base_camera / sim.T_flange_camera as rendered and
+        sim.T_flange_camera as rendered and
         camera.extrinsics_inline: the rendered pose with extrinsics_error
         ([translation m, rotation deg]) applied in the direction
         scenario_config_overlay uses for the same seed.
@@ -328,7 +322,7 @@ class MujocoWorld:
         if len(extrinsics_error) != 2:
             raise ValueError('extrinsics_error must be [translation m, rotation deg]')
         mount = self.info['mount']
-        T_true = self.T_base_camera if mount == 'eye_to_hand' else self.T_flange_camera
+        T_true = self.T_flange_camera
         rng = np.random.default_rng([int(self.info['seed']), 7919])
         T_est = perturb_pose(T_true, extrinsics_error[0], extrinsics_error[1], rng)
         zones = {}
@@ -348,7 +342,6 @@ class MujocoWorld:
                        'extrinsics_inline': {'mount': mount, 'matrix': _as_list(T_est)}},
             'perception': {'table': {'expected_z': self.table_z}},
             'sim': {'intrinsics': dict(self.meta['intrinsics']),
-                    'T_base_camera': _as_list(self.T_base_camera),
                     'T_flange_camera': _as_list(self.T_flange_camera),
                     'extrinsics_error': err,
                     'mujoco': {'camera': self.task_camera, 'table_z': self.table_z,

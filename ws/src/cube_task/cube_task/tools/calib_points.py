@@ -4,12 +4,10 @@ Fast camera extrinsics from point pairs: touch a target with the TCP, no board.
 At N spread-out spots on the table the camera measures a target in the camera
 frame, then the operator drags the arm (drag-teach mode) so the fingertip
 center (TCP) touches the measured point and presses Enter. A rigid fit of the
-pairs (core.transforms.fit_rigid) gives the extrinsics:
-
-- eye_to_hand: p_base = T_base_camera @ p_cam.
-- eye_in_hand: each measurement stores the flange pose it was taken at and
-  inv(T_base_flange_i) @ p_base = T_flange_camera @ p_cam, so the arm does not
-  have to come back to exactly the same view pose between points.
+pairs (core.transforms.fit_rigid) gives the wrist camera extrinsics (the
+competition's only camera, eye_in_hand): each measurement stores the flange pose
+it was taken at and inv(T_base_flange_i) @ p_base = T_flange_camera @ p_cam, so
+the arm does not have to come back to exactly the same view pose between points.
 
 Targets (--target):
   block  one block 8-80 mm high (e.g. an L1 cube) alone on the table: the table
@@ -609,15 +607,12 @@ def pair_arrays(pairs: Sequence[PointPair], mount: str) -> Tuple[np.ndarray, np.
     """
     Return (src, dst) Nx3 for the rigid fit dst = T @ src.
 
-    eye_to_hand: src = p_cam, dst = p_base (T = T_base_camera). eye_in_hand:
-    dst = inv(T_base_flange_cam) @ p_base (T = T_flange_camera).
+    src = p_cam, dst = inv(T_base_flange_cam) @ p_base (T = T_flange_camera).
     """
     from ..core.transforms import inv_T, transform_points
     src = np.array([np.asarray(p.p_cam, dtype=float) for p in pairs]).reshape(-1, 3)
-    if mount == 'eye_to_hand':
-        return src, np.array([np.asarray(p.p_base, dtype=float) for p in pairs]).reshape(-1, 3)
     if mount != 'eye_in_hand':
-        raise ValueError('mount must be eye_to_hand or eye_in_hand, got %r' % (mount,))
+        raise ValueError('mount must be eye_in_hand (the wrist camera), got %r' % (mount,))
     rows = []
     for p in pairs:
         if p.T_base_flange_cam is None:
@@ -659,10 +654,9 @@ def solve_extrinsics(pairs: Sequence[PointPair], mount: str, min_points: int = M
     Fit the extrinsics to the point pairs (Kabsch, core.transforms.fit_rigid).
 
     Returns (core.extrinsics.Extrinsics with source 'calib_points' and the
-    RMS, per-point residuals in m). eye_to_hand gives T_base_camera,
-    eye_in_hand T_flange_camera (see pair_arrays). Raises ValueError with
-    fewer than min_points pairs, (nearly) collinear points or a missing
-    eye_in_hand flange pose.
+    RMS, per-point residuals in m): T_flange_camera (see pair_arrays). Raises
+    ValueError with fewer than min_points pairs, (nearly) collinear points or a
+    missing flange pose.
     """
     from ..core.extrinsics import Extrinsics, normalize_mount
     from ..core.transforms import fit_rigid, transform_points
@@ -731,12 +725,9 @@ def _table_rows(ext: Any, pairs: Sequence[PointPair]) -> List[Tuple[float, float
         pl = p.plane()
         if pl is None:
             continue
-        if ext.mount == 'eye_in_hand':
-            if p.T_base_flange_cam is None:
-                continue
-            T_bc = np.asarray(p.T_base_flange_cam, dtype=float) @ ext.T
-        else:
-            T_bc = ext.T
+        if p.T_base_flange_cam is None:
+            continue
+        T_bc = np.asarray(p.T_base_flange_cam, dtype=float) @ ext.T
         ang, height = view_geometry(pl)
         n_b, d_b = table_in_base(T_bc, pl)
         rows.append((ang, height, n_b, d_b))
@@ -758,11 +749,8 @@ def sanity_report(ext: Any, pairs: Sequence[PointPair],
     """
     lines: List[str] = []
     warns: List[str] = []
-    if ext.mount == 'eye_to_hand':
-        lines.append('camera position in base: %s mm' % fmt_mm(ext.T[:3, 3]))
-    else:
-        lines.append('camera in the flange frame: %s mm, optical axis %.1f deg from flange z'
-                     % (fmt_mm(ext.T[:3, 3]), _deg_between(ext.T[:3, 2], (0.0, 0.0, 1.0))))
+    lines.append('camera in the flange frame: %s mm, optical axis %.1f deg from flange z'
+                 % (fmt_mm(ext.T[:3, 3]), _deg_between(ext.T[:3, 2], (0.0, 0.0, 1.0))))
     rows = _table_rows(ext, pairs)
     if not rows:
         lines.append('no table plane stored with the points: table checks skipped')
@@ -894,8 +882,8 @@ def pairs_from_json(data: Any, mount: Optional[str] = None) -> List[PointPair]:
     ids = [p.id for p in pairs]
     if len(set(ids)) != len(ids):
         raise ValueError('duplicate point ids in the session file')
-    if data.get('mount') == 'eye_in_hand' and any(p.T_base_flange_cam is None for p in pairs):
-        raise ValueError('eye_in_hand session points need T_base_flange_cam')
+    if any(p.T_base_flange_cam is None for p in pairs):
+        raise ValueError('session points need T_base_flange_cam (the wrist camera pose)')
     return pairs
 
 
@@ -1015,9 +1003,10 @@ class _SimOperator:
         self.k = 0
         self.q_view = np.asarray(cfg.get('robot.poses.observe_joints', None) or [0.0] * 6,
                                  dtype=float)
-        T_bc, T_fc = cfg.get('sim.T_base_camera', None), cfg.get('sim.T_flange_camera', None)
-        self.T_bc = None if T_bc is None else np.asarray(T_bc, dtype=float)
-        self.T_fc = None if T_fc is None else np.asarray(T_fc, dtype=float)
+        T_fc = cfg.get('sim.T_flange_camera', None)
+        if T_fc is None:
+            raise ValueError('sim calibration needs sim.T_flange_camera (the wrist camera)')
+        self.T_fc = np.asarray(T_fc, dtype=float)
         self.intr = CameraIntrinsics.from_dict(cfg.get('sim.intrinsics'))
         self.bad_id = int(cal.args.sim_bad_touch or 0)
         self.bad_done = False
@@ -1027,23 +1016,22 @@ class _SimOperator:
 
     def truth(self) -> Optional[np.ndarray]:
         """Return the true camera pose the extrinsics should match (sim config)."""
-        return self.T_bc if self.cal.mount == 'eye_to_hand' else self.T_fc
+        return self.T_fc
 
     def _view_joints(self) -> np.ndarray:
-        """Return the arm pose for the next measurement (eye_in_hand: varied view poses)."""
+        """Return the arm pose for the next measurement (varied wrist view poses)."""
         q = self.q_view.copy()
-        if self.cal.mount == 'eye_in_hand':
-            q2 = q + np.asarray(SIM_VIEW_OFFSETS[self.k % len(SIM_VIEW_OFFSETS)])
-            if self.arm.kin.within_limits(q2):
-                q = q2
+        q2 = q + np.asarray(SIM_VIEW_OFFSETS[self.k % len(SIM_VIEW_OFFSETS)])
+        if self.arm.kin.within_limits(q2):
+            q = q2
         return q
 
     def place(self) -> bool:
         """Pose the arm, put the target on the next visible, reachable spot (False: none left)."""
         q = self._view_joints()
         sim_drag_joints(self.arm, q)
-        T_bc = self.T_bc if self.T_fc is None else self.arm.kin.fk(q) @ self.T_fc
-        bottom = SIM_FINGER_ROWS if self.cal.mount == 'eye_in_hand' else 0
+        T_bc = self.arm.kin.fk(q) @ self.T_fc
+        bottom = SIM_FINGER_ROWS
         while self.next_spot < len(self.spots):
             x, y = self.spots[self.next_spot]
             self.next_spot += 1
@@ -1093,7 +1081,7 @@ class _Calib:
         from ..core.extrinsics import normalize_mount
         self.args, self.s, self.ui, self.cfg = args, s, ui, s.cfg
         self.mode = args.mode
-        self.mount = normalize_mount(self.cfg.get('camera.mount', 'eye_to_hand'))
+        self.mount = normalize_mount(self.cfg.get('camera.mount', 'eye_in_hand'))
         self.block = BlockParams.from_cfg(self.cfg)
         self.dictionary = aruco_dictionary(args.aruco_dict) if args.target == 'aruco' else None
         self.max_spread = float(args.max_spread) / 1000.0
@@ -1135,12 +1123,9 @@ class _Calib:
                 if self.dictionary is not None else 'one block (8-80 mm high) alone on the table')
         ui.say('Target: %s. Spread the spots over the whole pick area (corners and center).'
                % what)
-        if self.mount == 'eye_to_hand':
-            ui.say('Before each measurement move the arm out of the camera view.')
-        else:
-            ui.say('Before each measurement drag the arm so the camera sees the target (not at '
-                   'the image border) and let the arm rest still; the view may change between '
-                   'points.')
+        ui.say('Before each measurement drag the arm so the camera sees the target (not at '
+               'the image border) and let the arm rest still; the view may change between '
+               'points.')
         if self.mode == 'real':
             ui.say('The tool never moves the arm, it only reads its pose.')
             teach_hint(ui, self.s.arm)
@@ -1155,18 +1140,16 @@ class _Calib:
         """Let the operator place the target; return the command ('measure', 'quit', ...)."""
         k, ui = self.next_id, self.ui
         if self.sim is not None:
-            text = 'point #%d: put the %s at a new spot, arm %s' % (
-                k, self._what(), 'out of the camera view' if self.mount == 'eye_to_hand'
-                else 'at a view pose')
+            text = 'point #%d: put the %s at a new spot, arm at a view pose' % (
+                k, self._what())
             if operator_action(ui, 'sim', text, self.sim.place):
                 ui.say('[sim operator] %s' % self.sim.where())
                 return 'measure'
             ui.say('[sim operator] no free spot left in the pick area')
             return 'fail'
-        text = 'point #%d (%d of %d): put the %s at a new spot, %s' % (
-            k, len(self.pairs) + 1, self.target, self._what(),
-            'move the arm out of the camera view' if self.mount == 'eye_to_hand'
-            else 'drag the arm so the camera sees it and let the arm rest still')
+        text = ('point #%d (%d of %d): put the %s at a new spot, drag the arm so the camera '
+                'sees it and let the arm rest still'
+                % (k, len(self.pairs) + 1, self.target, self._what()))
         if ui.headless:
             line = ui.prompt('%s %s' % (text, HEADLESS_PLACE))
             return 'quit' if ui.eof else parse_command(line)[0]
@@ -1232,11 +1215,10 @@ class _Calib:
         """Measure the target on --frames new frames; return (measurement, arm pose, frame)."""
         s, cfg, n = self.s, self.cfg, int(self.args.frames)
         pose0, _dev = read_pose_averaged(s.arm, s.clock, n=4)
-        if self.mount == 'eye_in_hand':
-            if pose0 is None:
-                return Measurement(False, 'no arm pose: eye_in_hand needs the flange pose of '
-                                   'every measurement (CAN link?)'), None, None
-            s.clock.sleep(float(cfg.get('camera.settle_s', 0.4)))
+        if pose0 is None:
+            return Measurement(False, 'no arm pose: the wrist camera needs the flange pose of '
+                               'every measurement (CAN link?)'), None, None
+        s.clock.sleep(float(cfg.get('camera.settle_s', 0.4)))
         now = s.clock.now()
         newer = now if self.last_stamp is None else max(self.last_stamp, now)
         frames = grab_frames(s.camera, n, float(cfg.get('camera.frame_timeout_s', 2.0)), newer)
@@ -1247,7 +1229,7 @@ class _Calib:
         pose1, _dev = read_pose_averaged(s.arm, s.clock, n=4)
         results = [self.measure_frame(f) for f in frames]
         m = average_measurements([r[1] for r in results], self.max_spread, min_ok=n // 2 + 1)
-        if m.ok and self.mount == 'eye_in_hand':
+        if m.ok:
             moved = self._moved(pose0, pose1)
             if moved:
                 m.ok, m.reason = False, moved

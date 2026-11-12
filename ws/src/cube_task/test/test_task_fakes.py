@@ -28,7 +28,7 @@ def make_cfg(task='L1', **overrides):
     cfg.set('zones', copy.deepcopy(ZONES))
     cfg.set('robot.backend', 'sim')
     cfg.set('robot.poses.observe_joints', [0.0, 0.3, -0.5, 0.0, 0.6, 0.0])
-    cfg.set('camera.mount', 'eye_to_hand')
+    cfg.set('camera.mount', 'eye_in_hand')
     cfg.set('robot.gripper.max_width', 0.07)      # FakeArm's stroke
     cfg.set('tasks.L1.labels', ['red', 'green', 'blue'])
     cfg.set('tasks.L1.class_to_zone', {'red': 'zone_red', 'green': 'zone_green',
@@ -320,23 +320,39 @@ class FakeLogger:
 class FakeExt:
     """Minimal core.extrinsics.Extrinsics stand-in."""
 
-    def __init__(self, T=None, mount='eye_to_hand'):
+    def __init__(self, T=None, mount='eye_in_hand'):
         self.T = np.eye(4) if T is None else np.asarray(T, dtype=float)
         self.mount = mount
-        self.parent_frame = 'base' if mount == 'eye_to_hand' else 'flange'
+        self.parent_frame = 'flange'
 
 
 def default_camera_T():
-    """Camera 0.8 m above the pick area looking down (optical z = base -Z)."""
+    """Wrist camera in the flange frame: 0.05 m off the tool axis, looking along tool z."""
     T = np.eye(4)
-    T[:3, :3] = np.array([[0.0, -1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, -1.0]])
-    T[:3, 3] = [0.30, 0.0, 0.80]
+    T[:3, :3] = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    T[:3, 3] = [-0.05, 0.0, 0.03]
     return T
 
 
+class StillArm:
+    """Arm stand-in holding the wrist still: get_flange_pose() returns T_base_flange."""
+
+    def __init__(self, clock, T_base_flange):
+        self.clock = clock
+        self.T = np.asarray(T_base_flange, dtype=float)
+
+    def get_flange_pose(self):
+        return Stamped(self.T.copy(), self.clock.now())
+
+
+def still_wrist_camera(world, clock, intrinsics, T_base_camera, **kw):
+    """Return a wrist SimCamera (T_flange_camera = I) held still at T_base_camera."""
+    from cube_task.sim.sim_camera import SimCamera
+    return SimCamera(world, clock, intrinsics, T_flange_camera=np.eye(4),
+                     arm=StillArm(clock, T_base_camera), **kw)
+
+
 def _fake_camera_pose_in_base(ext, T_base_flange=None, T_flange_tcp=None):
-    if ext.mount == 'eye_to_hand':
-        return ext.T.copy()
     if T_base_flange is None:
         raise ValueError('need flange pose')
     return np.asarray(T_base_flange) @ ext.T

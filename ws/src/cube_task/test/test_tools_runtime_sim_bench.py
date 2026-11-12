@@ -20,7 +20,7 @@ def test_parse_seeds_and_lists():
 
 def test_make_specs_expands_the_grid():
     args = sim_bench.build_parser().parse_args(
-        ['--tasks', 'L1,L2', '--seeds', '0-2', '--mounts', 'eye_to_hand',
+        ['--tasks', 'L1,L2', '--seeds', '0-2', '--mounts', 'eye_in_hand',
          '--difficulty', 'normal,hard', '--faults', 'none,drop'])
     specs = sim_bench.make_specs(args)
     assert len(specs) == 2 * 3 * 1 * 2 * 2
@@ -46,7 +46,7 @@ def test_fault_points_are_seeded_and_inside_the_run():
 
 def test_small_bench_run_writes_json(tmp_path, capsys):
     out = tmp_path / 'bench.json'
-    code = sim_bench.main(['--tasks', 'L1', '--seeds', '0', '--mounts', 'eye_to_hand',
+    code = sim_bench.main(['--tasks', 'L1', '--seeds', '0', '--mounts', 'eye_in_hand',
                            '--faults', 'none,grasp_miss,camera_none', '--json', str(out)])
     text = capsys.readouterr().out
     assert code == 0, text
@@ -75,7 +75,7 @@ def test_grasp_miss_is_armed_before_the_last_continuous_close(required, mount):
 
 def test_parallel_jobs_match_sequential(tmp_path):
     seq, par = tmp_path / 'seq.json', tmp_path / 'par.json'
-    argv = ['--tasks', 'L1', '--seeds', '0-1', '--mounts', 'eye_to_hand', '--faults', 'drop']
+    argv = ['--tasks', 'L1', '--seeds', '0-1', '--mounts', 'eye_in_hand', '--faults', 'drop']
     assert sim_bench.main(argv + ['--json', str(seq)]) == 0
     assert sim_bench.main(argv + ['--jobs', '2', '--json', str(par)]) == 0
     keys = ('seed', 'placed', 'correct', 'wrong', 'elapsed', 'attempts', 'stop_reason')
@@ -85,7 +85,7 @@ def test_parallel_jobs_match_sequential(tmp_path):
 
 
 def _run(**kw):
-    r = {'task': 'L1', 'seed': 0, 'mount': 'eye_to_hand', 'difficulty': 'normal',
+    r = {'task': 'L1', 'seed': 0, 'mount': 'eye_in_hand', 'difficulty': 'normal',
          'fault': 'none', 'placed': 3, 'required': 3, 'correct': 3, 'wrong': 0,
          'remaining': 0, 'elapsed': 60.0, 'time_limit': 180.0, 'attempts': 3,
          'stop_reason': 'done', 'error': '', 'reproduce': 'python3 -m cube_task sim_bench x'}

@@ -48,22 +48,17 @@ GRIPPER_MAX_WIDTH = 0.100            # config robot.gripper.max_width (100 mm st
 
 DEFAULT_PICK_POLYGON = [[0.15, -0.22], [0.45, -0.22], [0.45, 0.22], [0.15, 0.22]]
 TASKS = ('L1', 'L2')
-MOUNTS = ('eye_to_hand', 'eye_in_hand')
+MOUNTS = ('eye_in_hand',)               # the competition has only the wrist camera
 DIFFICULTIES = ('normal', 'hard')
 MATERIALS = ('official', 'legacy')
 LAYOUTS = ('A', 'B')
 
 # Orbbec-like wide-FOV color camera.
 DEFAULT_INTRINSICS = dict(fx=380.0, fy=380.0, cx=319.5, cy=239.5, width=640, height=480)
-EYE_TO_HAND_CAMERA_POS = (0.70, 0.0, 0.62)
-EYE_TO_HAND_LOOK_AT = (0.30, 0.0, 0.0)
 # Wrist camera: 0.07 m from the gripper axis on the flange -x side ("on top"
 # of the gripper in the home pose), 0.03 m in front of the flange face,
 # optical axis parallel to the tool z. Image down = flange x, right = -flange y.
 EYE_IN_HAND_OFFSET = (-0.07, 0.0, 0.03)
-# Eye-to-hand park pose: home with joint1 turned toward +y so the gripper is
-# raised, outside the pick polygon in XY and outside the camera's view of it.
-EYE_TO_HAND_PARK_JOINTS = (1.1, 0.3, -0.3, 0.0, 0.0, 0.0)
 
 
 # ---------------------------------------------------------------- kinematics
@@ -230,17 +225,16 @@ def _eye_in_hand_observe() -> Tuple[Tuple[float, ...], Tuple[Tuple[float, ...], 
 
 @functools.lru_cache(maxsize=2)
 def _views() -> Tuple[Tuple[np.ndarray, int], ...]:
-    """Return (T_camera_base, max image row) of both camera mounts' observe views."""
+    """Return (T_camera_base, max image row) of the legacy wrist observe view."""
     eih = np.array(_eye_in_hand_observe()[1])
-    eth = look_at(EYE_TO_HAND_CAMERA_POS, EYE_TO_HAND_LOOK_AT)
     h = DEFAULT_INTRINSICS['height']
-    return ((inv_T(eth), h - VIEW_MARGIN_PX), (inv_T(eih), h - EYE_IN_HAND_BOTTOM_PX))
+    return ((inv_T(eih), h - EYE_IN_HAND_BOTTOM_PX),)
 
 
 def fully_visible(obj: SimObject, views: Optional[Sequence[Tuple[np.ndarray, int]]] = None,
                   exact: bool = False) -> bool:
     """
-    Check that the object lies inside both mounts' observe images.
+    Check that the object lies inside every given observe image (wrist camera views).
 
     views: [(T_camera_base, max image row)] (default: the legacy views).
     exact False: the corners of the base AABB must project inside; True:
@@ -445,12 +439,10 @@ OFFICIAL_COLORS = {'cucumber': (35, 95, 30), 'pear': (60, 190, 170), 'banana': (
                    'bell_pepper': (30, 30, 190)}
 
 # Table layouts. cards: zone name -> card center (x, y) in base XY (m); pick:
-# pick polygon (>= 2 cm from every card); eye_to_hand: (camera position, look-at
-# point); eye_in_hand: observe joints (rad) of the wrist camera. Card corners
-# (TCP 0.085 m) and the release / retreat poses are reachable with the tool
-# leaned outward <= 30 deg (layout_reach_report). The fixed camera sees the
-# pick area and all cards; the wrist camera sees the pick area (cards are
-# taught zones, not observed).
+# pick polygon (>= 2 cm from every card); eye_in_hand: main observe joints (rad) of
+# the wrist camera. Card corners (TCP 0.085 m) and the release / retreat poses are
+# reachable with the tool leaned outward <= 30 deg (layout_reach_report). The wrist
+# views see the pick area (cards are taught zones, not observed).
 OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
     # A: green card left of the pick area, red card right, yellow in front.
     # TEMPORARY (11/11): fits a 1000 x 500 mm table with the base at the middle of a
@@ -459,7 +451,6 @@ OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
     'A': {'cards': {'zone_green': (0.17, 0.35), 'zone_yellow': (0.49, 0.0),
                     'zone_red': (0.17, -0.35)},
           'pick': [[0.12, -0.25], [0.40, -0.25], [0.40, 0.25], [0.12, 0.25]],
-          'eye_to_hand': ((0.60, 0.0, 0.50), (0.36, 0.0, 0.0)),
           'eye_in_hand': (0.0, 0.486, -0.47, 0.0, 1.168, 0.0),
           # wrist observe views: eye_in_hand joints with joint1 turned by these (rad), in
           # scan order (right, middle, left); one view does not cover the pick area
@@ -468,7 +459,6 @@ OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
     'B': {'cards': {'zone_green': (0.43, 0.205), 'zone_yellow': (0.43, 0.0),
                     'zone_red': (0.43, -0.205)},
           'pick': [[0.16, -0.18], [0.305, -0.23], [0.305, 0.23], [0.16, 0.18]],
-          'eye_to_hand': ((0.60, 0.0, 0.50), (0.36, 0.0, 0.0)),
           'eye_in_hand': (0.0, 0.486, -0.495, 0.0, 1.168, 0.0),
           'wrist_yaws': (-0.45, 0.0, 0.45), 'wrist_lift': 0.1},
 }
@@ -477,7 +467,7 @@ OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
 # ------------------------------------------------------------------ sampling
 EDGE_MARGIN = 0.01        # m, object footprint corners stay this far inside the pick polygon
 REACH_R = (0.17, 0.43)    # m, object centers within the vertical-tool grasp reach
-VIEW_MARGIN_PX = 4        # objects stay this far inside both observe images
+VIEW_MARGIN_PX = 4        # objects stay this far inside the observe images
 EYE_IN_HAND_BOTTOM_PX = 40  # bottom image rows of the wrist view that show the fingers
 
 
@@ -798,12 +788,6 @@ def official_zones(layout: str = 'A') -> List[SimZone]:
     return out
 
 
-def official_T_base_camera(layout: str = 'A') -> np.ndarray:
-    """Return T_base_camera of the fixed (eye-to-hand) camera of a table layout."""
-    eye, target = OFFICIAL_LAYOUTS[layout]['eye_to_hand']
-    return look_at(eye, target)
-
-
 @functools.lru_cache(maxsize=4)
 def official_observe(layout: str = 'A'
                      ) -> Tuple[Tuple[float, ...], Tuple[Tuple[float, ...], ...]]:
@@ -840,31 +824,27 @@ def official_wrist_views(layout: str = 'A'
 
 def official_visible(obj: SimObject, layout: str = 'A', any_wrist_view: bool = True) -> bool:
     """
-    Return True when obj is whole in the fixed camera and in the wrist camera.
+    Return True when obj is whole in the wrist camera image.
 
     any_wrist_view True (L2: objects may lie outside one view): in at least one of
     the wrist observe views; False (L1: objects inside the camera view): in the
     main wrist observe view (official_observe).
     """
     h = DEFAULT_INTRINSICS['height']
-    fixed = ((inv_T(official_T_base_camera(layout)), h - VIEW_MARGIN_PX),)
 
     def seen(views) -> bool:
         return fully_visible(obj, views) or fully_visible(obj, views, exact=True)
 
     wrist = ([T for _q, T in official_wrist_views(layout)] if any_wrist_view
              else [official_observe(layout)[1]])
-    return seen(fixed) and any(seen(((inv_T(np.array(T)), h - EYE_IN_HAND_BOTTOM_PX),))
-                               for T in wrist)
+    return any(seen(((inv_T(np.array(T)), h - EYE_IN_HAND_BOTTOM_PX),)) for T in wrist)
 
 
 @functools.lru_cache(maxsize=4)
 def official_views(layout: str = 'A') -> Tuple[Tuple[np.ndarray, int], ...]:
-    """Return (T_camera_base, max image row) of both mounts' observe views of a layout."""
+    """Return ((T_camera_base, max image row),) of the main wrist observe view of a layout."""
     eih = np.array(official_observe(layout)[1])
-    h = DEFAULT_INTRINSICS['height']
-    return ((inv_T(official_T_base_camera(layout)), h - VIEW_MARGIN_PX),
-            (inv_T(eih), h - EYE_IN_HAND_BOTTOM_PX))
+    return ((inv_T(eih), DEFAULT_INTRINSICS['height'] - EYE_IN_HAND_BOTTOM_PX),)
 
 
 def _image_margin(pts: np.ndarray, T_cb: np.ndarray, v_max: float) -> float:
@@ -882,8 +862,8 @@ def layout_view_report(layout: str = 'A') -> Dict[str, Dict[str, float]]:
     """
     Return the image margins (px, < 0 = outside) of the pick area and the cards.
 
-    {mount: {'pick': pick polygon corners on the table, 'cards': every card
-    corner}}. The wrist view excludes its bottom EYE_IN_HAND_BOTTOM_PX rows
+    {'eye_in_hand': {'pick': pick polygon corners on the table, 'cards': every card
+    corner}} for the main wrist view. It excludes its bottom EYE_IN_HAND_BOTTOM_PX rows
     (fingers); from a reachable observe pose it cannot also see the cards,
     which are taught zones there.
     """
@@ -1162,15 +1142,11 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
                 ungraspable={k: v for k, v in sorted(why.items()) if v})
     info['graspable_required'] = sum(1 for o in objects
                                      if o.label in class_to_zone and not why[o.label])
-    if mount == 'eye_to_hand':
-        info['T_base_camera'] = official_T_base_camera(layout)
-        info['observe_joints'] = [float(v) for v in EYE_TO_HAND_PARK_JOINTS]
-    else:
-        q, T_obs = official_observe(layout)
-        info['T_flange_camera'] = eye_in_hand_T_flange_camera()
-        info['T_base_camera_observe'] = np.array(T_obs)
-        info['observe_joints'] = list(q)
-        info['observe_views'] = [list(v) for v, _T in official_wrist_views(layout)]
+    q, T_obs = official_observe(layout)
+    info['T_flange_camera'] = eye_in_hand_T_flange_camera()
+    info['T_base_camera_observe'] = np.array(T_obs)
+    info['observe_joints'] = list(q)
+    info['observe_views'] = [list(v) for v, _T in official_wrist_views(layout)]
     return world, info
 
 
@@ -1254,7 +1230,7 @@ def layout_reach_report(layout: str = 'A', gripper_width: Optional[float] = None
 
 
 # ----------------------------------------------------------------- scenarios
-def make_scenario(task: str, seed: int, mount: str = 'eye_to_hand',
+def make_scenario(task: str, seed: int, mount: str = 'eye_in_hand',
                   difficulty: str = 'normal', materials: str = 'official', layout: str = 'A',
                   gripper_width: Optional[float] = None) -> Tuple[SimWorld, Dict[str, Any]]:
     """
@@ -1280,9 +1256,9 @@ def make_scenario(task: str, seed: int, mount: str = 'eye_to_hand',
 
     info keys: task, seed, mount, difficulty, materials, layout,
     gripper_width, labels, class_to_zone, categories, zones (name -> core
-    Zone), pick_polygon, intrinsics (CameraIntrinsics), T_base_camera
-    (eye_to_hand) or T_flange_camera and T_base_camera_observe
-    (eye_in_hand), observe_joints, objects, required, time_limit_s, plus for
+    Zone), pick_polygon, intrinsics (CameraIntrinsics), T_flange_camera and
+    T_base_camera_observe (the wrist camera; mount must be 'eye_in_hand'),
+    observe_joints, objects, required, time_limit_s, plus for
     official scenes ungraspable and graspable_required (targets some
     top-down grasp fits). Deterministic for a given argument set.
     """
@@ -1348,14 +1324,10 @@ def _legacy_scenario(task: str, seed: int, mount: str, difficulty: str
                 intrinsics=default_intrinsics(),
                 objects=[{'name': o.name, 'label': o.label} for o in objects],
                 required=sum(1 for o in objects if o.label in class_to_zone))
-    if mount == 'eye_to_hand':
-        info['T_base_camera'] = look_at(EYE_TO_HAND_CAMERA_POS, EYE_TO_HAND_LOOK_AT)
-        info['observe_joints'] = [float(v) for v in EYE_TO_HAND_PARK_JOINTS]
-    else:
-        q, T_obs = _eye_in_hand_observe()
-        info['T_flange_camera'] = eye_in_hand_T_flange_camera()
-        info['T_base_camera_observe'] = np.array(T_obs)
-        info['observe_joints'] = list(q)
+    q, T_obs = _eye_in_hand_observe()
+    info['T_flange_camera'] = eye_in_hand_T_flange_camera()
+    info['T_base_camera_observe'] = np.array(T_obs)
+    info['observe_joints'] = list(q)
     return world, info
 
 
@@ -1399,20 +1371,16 @@ def scenario_config_overlay(info: Dict[str, Any],
 
     extrinsics_error: [translation m, rotation deg] applied in a direction
     seeded by info['seed'] to the extrinsics the robot code is given
-    (camera.extrinsics_inline); sim.T_base_camera / sim.T_flange_camera keep
-    the true pose used for rendering. Merge it over a config loaded without
+    (camera.extrinsics_inline); sim.T_flange_camera keeps the true pose used
+    for rendering. Merge it over a config loaded without
     site overlays, or site zones are merged with the sim zones.
     """
     if len(extrinsics_error) != 2:
         raise ValueError('extrinsics_error must be [translation m, rotation deg]')
     task, mount = info['task'], info['mount']
     rng = np.random.default_rng([int(info['seed']), 7919])
-    if mount == 'eye_to_hand':
-        T_true = np.asarray(info['T_base_camera'], dtype=float)
-        sim_cam = {'T_base_camera': _as_list(T_true), 'T_flange_camera': None}
-    else:
-        T_true = np.asarray(info['T_flange_camera'], dtype=float)
-        sim_cam = {'T_base_camera': None, 'T_flange_camera': _as_list(T_true)}
+    T_true = np.asarray(info['T_flange_camera'], dtype=float)
+    sim_cam = {'T_flange_camera': _as_list(T_true)}
     T_est = perturb_pose(T_true, extrinsics_error[0], extrinsics_error[1], rng)
     zones = {}
     for name, z in info['zones'].items():

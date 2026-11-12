@@ -546,7 +546,7 @@ def nearest_sim_object(world, xy: Sequence[float], max_dist: float = 0.05):
     return best if float(np.hypot(*(best.center_xy() - c))) <= max_dist else None
 
 
-def sim_relayout(world, task: str, seed: int, mount: str = 'eye_to_hand') -> int:
+def sim_relayout(world, task: str, seed: int, mount: str = 'eye_in_hand') -> int:
     """
     Simulate operator: replace the objects with the layout of scenario seed.
 

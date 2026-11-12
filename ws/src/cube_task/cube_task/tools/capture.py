@@ -89,7 +89,7 @@ class _Capture:
         self.saved = 0
         self.last_save = -math.inf
         self.last_stamp: Optional[float] = None
-        self.mount = str(s.cfg.get('camera.mount', 'eye_to_hand'))
+        self.mount = str(s.cfg.get('camera.mount', 'eye_in_hand'))
         self.ext = None
         self.perception = None
         self.T_ft = flange_to_tcp(s.cfg)
@@ -135,13 +135,9 @@ def _connect_arm_readonly(args, s, ui) -> bool:
         s.arm.connect()
         return True
     except ArmError as e:
-        if str(s.cfg.get('camera.mount', '')) == 'eye_in_hand':
-            ui.say('eye_in_hand frames need the arm pose, but the arm did not connect: %s\n'
-                   'Fix the CAN link or pass --no-arm to capture without poses.' % e)
-            return False
-        ui.say('arm not connected (%s); frames are saved without arm poses' % e)
-        s.arm = None
-        return True
+        ui.say('the wrist camera frames need the arm pose, but the arm did not connect: %s\n'
+               'Fix the CAN link or pass --no-arm to capture without poses.' % e)
+        return False
 
 
 def main(argv=None, ui=None) -> int:

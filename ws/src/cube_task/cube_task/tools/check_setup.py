@@ -609,13 +609,13 @@ def _pick_area_depth(rep, cfg, frame, depth, extrinsics_from_cfg, camera_pose_fo
         rep.warn(g, 'camera: pick-area depth not checked: %s' % why)
         return
     # A wrist camera sees the pick area only from the observe pose, and nothing moves here.
-    bad = rep.warn if ext.mount == 'eye_in_hand' else rep.fail
-    note = ' (eye_in_hand: valid only at the observe pose)' if ext.mount == 'eye_in_hand' else ''
+    bad = rep.warn
+    note = ' (wrist camera: valid only at the observe pose)'
     tz = cfg.get('perception.table.expected_z', None)
     try:
         mask = pick_area_mask(poly, 0.0 if tz is None else float(tz), T_bc, frame.intrinsics)
     except ValueError as e:
-        bad(g, 'camera: %s%s' % (e, note), 'check the extrinsics direction (T_base_camera)')
+        bad(g, 'camera: %s%s' % (e, note), 'check the extrinsics direction (T_flange_camera)')
         return
     n = int(mask.sum())
     if n == 0:

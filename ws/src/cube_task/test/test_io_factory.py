@@ -18,7 +18,6 @@ from cube_task.core.types import CameraIntrinsics, Frame
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INTR = {'fx': 500.0, 'fy': 500.0, 'cx': 319.5, 'cy': 239.5, 'width': 640, 'height': 480}
-T_BC = [[0, -1, 0, 0.3], [-1, 0, 0, 0.0], [0, 0, -1, 0.7], [0, 0, 0, 1]]
 T_FC = [[0, -1, 0, 0.06], [1, 0, 0, 0.0], [0, 0, 1, 0.03], [0, 0, 0, 1]]
 
 
@@ -72,44 +71,35 @@ def test_unknown_backend():
         make_camera(_cfg(camera__backend=None), SimClock())
 
 
-def test_sim_eye_to_hand(fake_sim):
-    clock, world = SimClock(), object()
-    cfg = _cfg(camera__backend='sim', camera__mount='eye_to_hand', sim__intrinsics=INTR,
-               sim__T_base_camera=T_BC, sim__T_flange_camera=T_FC, sim__seed=7)
-    make_camera(cfg, clock, sim_world=world)
-    kw = fake_sim[-1]
-    assert kw['world'] is world and kw['clock'] is clock and kw['arm'] is None
-    assert isinstance(kw['intrinsics'], CameraIntrinsics) and kw['intrinsics'].width == 640
-    assert isinstance(kw['T_base_camera'], np.ndarray)
-    assert np.allclose(kw['T_base_camera'], T_BC)
-    assert kw['T_flange_camera'] is None      # only the pose of the configured mount
-    assert (kw['noise_std'], kw['dropout'], kw['seed']) == (0.0008, 0.002, 7)
-
-
 def test_sim_eye_in_hand(fake_sim):
     arm = object()
     cfg = _cfg(camera__backend='sim', camera__mount='eye_in_hand', sim__intrinsics=INTR,
                sim__T_flange_camera=T_FC)
-    make_camera(cfg, SimClock(), sim_world=object(), arm=arm)
+    clock, world = SimClock(), object()
+    make_camera(cfg, clock, sim_world=world, arm=arm)
     kw = fake_sim[-1]
-    assert kw['arm'] is arm and kw['T_base_camera'] is None
-    assert np.allclose(kw['T_flange_camera'], T_FC)
+    assert kw['world'] is world and kw['clock'] is clock and kw['arm'] is arm
+    assert isinstance(kw['intrinsics'], CameraIntrinsics) and kw['intrinsics'].width == 640
+    assert np.allclose(kw['T_flange_camera'], T_FC) and 'T_base_camera' not in kw
     with pytest.raises(ValueError, match='needs the arm'):
         make_camera(cfg, SimClock(), sim_world=object())
+    with pytest.raises(ValueError, match='eye_to_hand'):
+        make_camera(_cfg(camera__backend='sim', camera__mount='eye_to_hand', sim__intrinsics=INTR,
+                         sim__T_flange_camera=T_FC), SimClock(), sim_world=object(), arm=arm)
 
 
 @pytest.mark.parametrize('over, match', [
     ({}, 'sim_world'),
     ({'sim__intrinsics': None}, 'sim.intrinsics'),
     ({'sim__intrinsics': {'fx': 1.0}}, 'sim.intrinsics is invalid'),
-    ({'sim__T_base_camera': None}, 'sim.T_base_camera'),
-    ({'sim__T_base_camera': [[1, 0], [0, 1]]}, '4x4'),
+    ({'sim__T_flange_camera': None}, 'sim.T_flange_camera'),
+    ({'sim__T_flange_camera': [[1, 0], [0, 1]]}, '4x4'),
 ])
 def test_sim_missing_params(fake_sim, over, match):
-    kw = {'camera__backend': 'sim', 'camera__mount': 'eye_to_hand', 'sim__intrinsics': INTR,
-          'sim__T_base_camera': T_BC}
+    kw = {'camera__backend': 'sim', 'camera__mount': 'eye_in_hand', 'sim__intrinsics': INTR,
+          'sim__T_flange_camera': T_FC}
     kw.update(over)
     world = None if match == 'sim_world' else object()
     with pytest.raises(ValueError, match=match):
-        make_camera(_cfg(**kw), SimClock(), sim_world=world)
+        make_camera(_cfg(**kw), SimClock(), sim_world=world, arm=object())
     assert not fake_sim

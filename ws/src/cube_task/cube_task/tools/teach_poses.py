@@ -5,8 +5,7 @@ The operator puts the arm in drag-teach mode (teach button on the arm) and
 moves it by hand. This tool only reads the arm; it never moves it. Commands:
 
   o         observe pose: current joints -> robot.poses.observe_joints
-            (eye_to_hand: warns when the camera sees the gripper in front of
-            the pick polygon)
+            (wrist camera: the camera must see the whole pick area from there)
   v [clear] observe view (eye_in_hand): append the current joints to
             robot.poses.observe_views, scanned in this order when one view does not
             cover the pick area (L2); 'v clear' empties the list. Teach every view,
@@ -56,9 +55,9 @@ from ..core.config import Config, deep_merge, read_yaml
 from ..core.transforms import neutral_closing_angle, top_down_T
 from ..core.zones import parse_zone
 from .common import add_common_args, load_cfg_for, open_session, setup_logging, TASKS
-from .onsite import (add_onsite_args, connect_arm_readonly, dotted_keys, flange_to_tcp,
+from .onsite import (add_onsite_args, connect_arm_readonly, dotted_keys,
                      fmt_list, fmt_mm, format_table, is_teaching, kinematic_arm,
-                     load_extrinsics_or_none, make_ui, next_command, operator_action,
+                     make_ui, next_command, operator_action,
                      output_path, overlay_file, parse_floats, read_pose, read_pose_averaged,
                      read_yaml_or_empty, sim_drag_joints, sim_drag_tcp, teach_hint, text_panel,
                      wall_stamp, write_report, write_site_yaml)
@@ -92,15 +91,8 @@ MIN_POLYGON_AREA = 0.01            # m^2
 MIN_CORNER_DIST = 0.02             # m, closer neighbors = the same corner touched twice
 MAX_CORNER_Z_SPREAD = 0.02         # m, table corners differing more -> warning
 FLOOR_TABLE_TOL = 0.03             # m, zone floor this far from the table z -> warning
-VIEW_MARGIN = 0.02                 # m, pick polygon grown by this for the gripper view check
 READ_DT = 0.02                     # s between the averaged arm readings
 JOINT_LIMIT_TOL = 0.01             # rad, readings this far outside a joint limit are clipped
-# Fingertip box of the gripper in the TCP frame (m): pad width along tool x, finger
-# thickness outside the opening along tool y, finger length from the fingertips (TCP)
-# up along -tool z. Same values as the simulated gripper (sim/world.FINGER_SIZE).
-FINGER_PAD = 0.020
-FINGER_THICKNESS = 0.012
-FINGER_LENGTH = 0.050
 ZONE_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_-]{0,39}$')
 # Top-view map: base x up, base y to the left.
 MAP_X = (-0.05, 0.65)              # m, base x range shown
@@ -601,106 +593,6 @@ def pick_polygon_from_touches(touches: Any, workspace: Any = None
     return {KEY_POLYGON: poly, KEY_TABLE_Z: _r(table_z)}, [], notes
 
 
-# ------------------------------------------------------------------ gripper in view
-def gripper_points(T_base_tcp: Any, open_width: float) -> np.ndarray:
-    """
-    Return the TCP and the 8 fingertip box corners in the base frame ((9, 3), m).
-
-    The box spans tool x +-FINGER_PAD / 2, tool y +-(open_width / 2 +
-    FINGER_THICKNESS) and from the fingertips (TCP) FINGER_LENGTH up along
-    -tool z.
-    """
-    T = np.asarray(T_base_tcp, dtype=float)
-    hx = FINGER_PAD / 2.0
-    hy = max(0.0, float(open_width)) / 2.0 + FINGER_THICKNESS
-    loc = [[0.0, 0.0, 0.0]]
-    for z in (0.0, -FINGER_LENGTH):
-        for sx in (-1.0, 1.0):
-            for sy in (-1.0, 1.0):
-                loc.append([sx * hx, sy * hy, z])
-    return np.asarray(loc) @ T[:3, :3].T + T[:3, 3]
-
-
-def table_hit_xy(point: Any, T_base_camera: Any, table_z: float) -> Optional[np.ndarray]:
-    """
-    Return where the camera's line of sight through point meets the table plane (base XY).
-
-    None when the point is behind the camera or the ray does not reach the
-    plane in front of the camera. A point projects into the image of a table
-    region exactly when this hit lies inside the region (pinhole model, so the
-    intrinsics do not matter).
-    """
-    T = np.asarray(T_base_camera, dtype=float)
-    P = np.asarray(point, dtype=float).ravel()[:3]
-    C = T[:3, 3]
-    d = P - C
-    if float(np.dot(T[:3, 2], d)) <= 1e-3:     # depth along the optical axis
-        return None
-    if d[2] >= -1e-9:
-        return None
-    t = (float(table_z) - float(C[2])) / float(d[2])
-    if t <= 0.0:
-        return None
-    return (C + t * d)[:2]
-
-
-def gripper_in_view(T_base_tcp: Any, T_base_camera: Any, polygon: Any, table_z: float,
-                    open_width: float, margin: float = VIEW_MARGIN) -> List[int]:
-    """
-    Return the gripper points that the camera sees in front of the pick polygon.
-
-    Indices into gripper_points (0 = TCP, 1-8 = fingertip box corners) whose
-    line of sight meets the table inside the polygon grown by margin (m).
-    """
-    hits = []
-    for i, P in enumerate(gripper_points(T_base_tcp, open_width)):
-        h = table_hit_xy(P, T_base_camera, table_z)
-        if h is not None and polygon_contains(polygon, float(h[0]), float(h[1]), margin):
-            hits.append(i)
-    return hits
-
-
-def observe_view_check(T_base_tcp: Any, T_base_camera: Any, polygon: Any, table_z: float,
-                       open_width: float, margin: float = VIEW_MARGIN) -> Tuple[bool, str]:
-    """Return (ok, message) of the eye_to_hand gripper-in-view check of an observe pose."""
-    hits = gripper_in_view(T_base_tcp, T_base_camera, polygon, table_z, open_width, margin)
-    if not hits:
-        return True, 'the gripper is outside the camera view of the pick area'
-    n_box = len([i for i in hits if i > 0])
-    parts = (['TCP'] if 0 in hits else []) + (
-        ['%d of 8 fingertip box corners' % n_box] if n_box else [])
-    return False, ('the camera sees the gripper (%s) in front of the pick area, so objects '
-                   'behind it are hidden. Park the arm out of the line of sight of the camera '
-                   'and teach the observe pose again.' % ', '.join(parts))
-
-
-def observe_view_report(cfg, T_base_tcp: Any, polygon: Any = None,
-                        table_z: Optional[float] = None) -> Tuple[Optional[bool], str]:
-    """
-    Run the gripper-in-view check of an eye_to_hand observe pose with the configured extrinsics.
-
-    polygon / table_z default to the config (table z 0 when unknown). Returns
-    (True = ok | False = gripper in view | None = skipped, message).
-    """
-    ext = load_extrinsics_or_none(cfg)
-    if ext is None:
-        return None, ('gripper-in-view check skipped: no usable extrinsics '
-                      '(camera.extrinsics_file)')
-    if ext.mount != 'eye_to_hand':
-        return None, 'gripper-in-view check skipped: the camera is not eye_to_hand'
-    poly = cfg.get(KEY_POLYGON, None) if polygon is None else polygon
-    if not isinstance(poly, (list, tuple)) or len(poly) < 3:
-        return None, 'gripper-in-view check skipped: no pick polygon'
-    tz = cfg.get(KEY_TABLE_Z, None) if table_z is None else table_z
-    from ..core.extrinsics import camera_pose_in_base
-    try:
-        width = float(cfg.get('robot.gripper.max_width', 0.07) or 0.07)
-        return observe_view_check(T_base_tcp, camera_pose_in_base(ext), poly,
-                                  0.0 if tz is None else float(tz), width)
-    except (TypeError, ValueError) as e:
-        return None, 'gripper-in-view check skipped: %s' % e
-
-
 # ------------------------------------------------------------------ validation / checks
 def validate_poses(data: Dict[str, Any], kin=None, workspace: Any = None) -> List[str]:
     """Return the problems of a poses.yaml mapping (each names its dotted key); [] if fine."""
@@ -820,9 +712,8 @@ def reach_report(cfg, arm, held_offset: Optional[float] = None) -> List[str]:
 
 
 def pose_report(cfg, kin=None) -> List[str]:
-    """Return the observe / home joint checks (limits, eye_to_hand gripper-in-view) as lines."""
+    """Return the observe / home joint checks (joint limits) as lines."""
     lines = []
-    mount = str(cfg.get('camera.mount', '') or '')
     for key in (KEY_OBSERVE, KEY_HOME):
         q = cfg.get(key, None)
         if q is None:
@@ -832,17 +723,6 @@ def pose_report(cfg, kin=None) -> List[str]:
         why = joints_problem(q, kin)
         if why:
             lines.append('[FAIL] %s %s' % (key, why))
-            continue
-        if key != KEY_OBSERVE or kin is None or mount != 'eye_to_hand':
-            continue
-        try:
-            T_tcp = kin.fk([float(v) for v in q]) @ flange_to_tcp(cfg)
-        except ValueError as e:
-            lines.append('[FAIL] observe pose not checked: %s' % e)
-            continue
-        ok, msg = observe_view_report(cfg, T_tcp)
-        level = {True: '[ OK ]', False: '[WARN]'}.get(ok, '[SKIP]')
-        lines.append('%s observe pose: %s' % (level, msg))
     return lines
 
 
@@ -1056,7 +936,7 @@ class _Teacher:
         self.kin = getattr(s.arm, 'kin', None)
         ws = self.cfg.get('robot.workspace', None)
         self.workspace = ws if isinstance(ws, dict) else {}
-        self.mount = str(self.cfg.get('camera.mount', 'eye_to_hand'))
+        self.mount = str(self.cfg.get('camera.mount', 'eye_in_hand'))
         self.writes = 0
         ez = existing.get('zones') if isinstance(existing, dict) else None
         self.loaded_zones = set(ez) if isinstance(ez, dict) else set()
@@ -1226,23 +1106,14 @@ class _Teacher:
     # ------------------------------------------------------------ commands
     def cmd_observe(self, _arg: str = '') -> None:
         """Record the current joints as the observe pose."""
-        if self.mount == 'eye_to_hand':
-            text = ('Drag the arm to the observe pose: parked where the camera sees the whole '
-                    'pick area (eye_to_hand)')
-        else:
-            text = ('Drag the arm to the observe pose: wrist camera looking down at the whole '
-                    'pick area (eye_in_hand)')
+        text = ('Drag the arm to the observe pose: wrist camera looking down at the pick area '
+                '(L2: teach the observe views with v as well)')
         got = self.joint_pose('observe pose', text, self.info.get('observe_joints'))
         if got is None:
             return
-        q, pose = got
-        if self.mount == 'eye_to_hand':
-            ok, msg = observe_view_report(self.cfg, pose.T_base_tcp, self.get(KEY_POLYGON),
-                                          self.get(KEY_TABLE_Z))
-            self.ui.say('%s%s' % ({True: 'OK: ', False: 'WARNING: '}.get(ok, ''), msg))
-        else:
-            self.ui.say('eye_in_hand: check now (view, in another terminal) that the camera sees '
-                        'the whole pick area from this pose')
+        q, _pose = got
+        self.ui.say('check now (view, in another terminal) that the camera sees the pick area '
+                    'from this pose')
         self.record('observe pose', {KEY_OBSERVE: q})
 
     def cmd_views(self, arg: str = '') -> None:

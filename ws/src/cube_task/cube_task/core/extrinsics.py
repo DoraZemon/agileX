@@ -4,8 +4,10 @@ Camera extrinsics (hand-eye calibration): load, validate, save and compose.
 ``Extrinsics.T`` is ``T_<parent_frame>_<child_frame>``: it maps points in the
 camera color optical frame (x right, y down, z forward) into parent_frame.
 
-- mount 'eye_to_hand' (camera fixed in the cell): parent_frame 'base',
-  T = T_base_camera.
+The competition has only the wrist camera, so the mount is always
+'eye_in_hand'; a fixed-camera calibration (T_base_camera, mount eye_to_hand,
+parent_frame base) is refused with a message saying so.
+
 - mount 'eye_in_hand' (camera on the wrist): parent_frame 'flange' (T =
   T_flange_camera, flange = link6 as reported by the SDK) or 'tcp' (T =
   T_tcp_camera, TCP = flange @ pose6_to_T(robot.tcp_offset)). Files and
@@ -38,9 +40,11 @@ from .transforms import (inv_T, make_T, pose6_to_T, quat_to_rot, rot_to_quat, ro
 
 _LOG = logging.getLogger('cube_task.extrinsics')
 
-MOUNTS = ('eye_to_hand', 'eye_in_hand')
+MOUNTS = ('eye_in_hand',)
 #: Allowed parent frames per mount.
-PARENTS = {'eye_to_hand': ('base',), 'eye_in_hand': ('flange', 'tcp')}
+PARENTS = {'eye_in_hand': ('flange', 'tcp')}
+WRIST_ONLY = ('the competition camera is the wrist camera (eye_in_hand): give its hand-eye '
+              'calibration T_flange_camera (scripts/handeye.sh)')
 DEFAULT_CHILD_FRAME = 'camera_color_optical_frame'
 #: Any extrinsic translation at least this long (m) is rejected (unit error).
 MAX_TRANSLATION_M = 3.0
@@ -66,10 +70,13 @@ _NAMED_KEYS = {  # key -> (parent frame, stored as T_camera_parent?)
 
 
 def normalize_mount(mount: Any) -> str:
-    """Return 'eye_to_hand' or 'eye_in_hand' ('-' and ' ' accepted for '_')."""
+    """Return 'eye_in_hand' ('-' and ' ' accepted for '_'); ValueError for anything else."""
     m = str(mount).strip().lower().replace('-', '_').replace(' ', '_')
+    if m == 'eye_to_hand':
+        raise ValueError('camera mount eye_to_hand (fixed camera) is not supported: '
+                         + WRIST_ONLY)
     if m not in MOUNTS:
-        raise ValueError('unknown camera mount %r: use eye_to_hand or eye_in_hand' % (mount,))
+        raise ValueError('unknown camera mount %r: use eye_in_hand' % (mount,))
     return m
 
 
@@ -156,8 +163,7 @@ class Extrinsics:
     Calibrated camera pose: ``T`` = T_<parent_frame>_<child_frame> (meters).
 
     Validated on construction (see validate_transform); invalid values raise
-    ValueError. parent_frame None means the documented default: 'base' for
-    eye_to_hand, 'flange' for eye_in_hand. Instances compare by identity
+    ValueError. parent_frame None means 'flange'. Instances compare by identity
     (compare ``T`` with numpy).
 
     Attributes
@@ -165,9 +171,9 @@ class Extrinsics:
     T
         4x4 float64.
     mount
-        'eye_to_hand' | 'eye_in_hand'.
+        'eye_in_hand'.
     parent_frame
-        'base' (eye_to_hand) | 'flange' or 'tcp' (eye_in_hand).
+        'flange' or 'tcp'.
     child_frame
         Camera frame name (color optical frame).
     source
@@ -194,6 +200,9 @@ class Extrinsics:
             self.parent_frame = PARENTS[self.mount][0]
         else:
             self.parent_frame = normalize_parent_frame(self.parent_frame)
+        if self.parent_frame == 'base':
+            raise ValueError('parent_frame base (T_base_camera, a fixed camera) is not '
+                             'supported: ' + WRIST_ONLY)
         if self.parent_frame not in PARENTS[self.mount]:
             raise ValueError('mount %s needs parent_frame %s, got %r'
                              % (self.mount, ' or '.join(PARENTS[self.mount]),
@@ -216,7 +225,7 @@ class Extrinsics:
 
     @property
     def name(self) -> str:
-        """Return the transform name, e.g. 'T_base_camera'."""
+        """Return the transform name, e.g. 'T_flange_camera'."""
         return 'T_%s_camera' % self.parent_frame
 
     def to_dict(self) -> Dict[str, Any]:
@@ -406,9 +415,8 @@ def extrinsics_from_dict(d: Mapping, default_mount: Optional[str] = None,
     """
     Build Extrinsics from a parsed mapping in any supported format.
 
-    mount comes from the 'mount' (or 'mode') key, else from parent_frame
-    (base -> eye_to_hand, flange / tcp -> eye_in_hand), else from
-    default_mount; ValueError when none is known. An eye_in_hand transform
+    The mount is always eye_in_hand: a 'mount' (or 'mode') key, default_mount or
+    parent_frame base (T_base_camera) saying otherwise raises ValueError. A transform
     without parent_frame is taken as T_flange_camera (with a warning for a
     handeye_calibration_ros result). parent_frame tcp needs tcp_offset (the
     driver's TCP offset during the calibration) and is converted to
@@ -424,17 +432,16 @@ def extrinsics_from_dict(d: Mapping, default_mount: Optional[str] = None,
         raise ValueError('%s: key T_..._camera implies parent_frame %r but parent_frame '
                          'is %r' % (what, implied, parent))
     parent = parent or implied
+    if parent == 'base':
+        raise ValueError('%s: T_base_camera / parent_frame base is a fixed-camera calibration: %s'
+                         % (what, WRIST_ONLY))
     mount_raw = d.get('mount', d.get('mode'))
     if mount_raw not in (None, ''):
         mount = normalize_mount(mount_raw)
-    elif parent is not None:
-        mount = 'eye_to_hand' if parent == 'base' else 'eye_in_hand'
-    elif default_mount not in (None, ''):
-        mount = normalize_mount(default_mount)
-        _LOG.info('%s: no mount in the data, using camera.mount = %s', what, mount)
     else:
-        raise ValueError('%s: camera mount unknown. Add "mount: eye_to_hand" (T_base_camera) '
-                         'or "mount: eye_in_hand" (T_flange_camera) to the file.' % what)
+        if default_mount not in (None, ''):
+            normalize_mount(default_mount)
+        mount = 'eye_in_hand'
     if parent is None:
         parent = PARENTS[mount][0]
         if mount == 'eye_in_hand':
@@ -522,21 +529,22 @@ def load_extrinsics(path: Union[str, Path], default_mount: Optional[str] = None)
       translation, quaternion (x, y, z, w), source, rms, stamp. All
       representations present must agree.
     - {matrix: 4x4} or {T: 4x4}; {T_base_camera | T_flange_camera |
-      T_tcp_camera: 4x4} (sets parent_frame); T_camera_* keys are inverted.
+      T_tcp_camera: 4x4} (sets parent_frame; T_base_camera is refused: a fixed
+      camera); T_camera_* keys are inverted.
     - {translation, quaternion | rotation (3x3) | rpy}, {xyz, rpy} (rad,
       SDK ZYX, |angle| <= 2*pi), rpy_deg (degrees). Vectors may be lists or
       {x, y, z[, w]}.
     - handeye_calibration_ros JSON {position, orientation (x, y, z, w), rpy}:
-      eye_to_hand gives T_base_camera; eye_in_hand gives T_<arm pose topic
-      frame>_camera (flange assumed with a warning unless parent_frame is set).
+      the eye_in_hand result T_<arm pose topic frame>_camera (flange assumed
+      with a warning unless parent_frame is set).
     - a bare 4x4 / 16-number list, a plain text matrix, or a .npy array.
 
     parent_frame tcp also needs tcp_offset [x, y, z, roll, pitch, yaw] (the
     driver TCP offset during the calibration); the result is T_flange_camera.
     child_frame must end in _optical_frame unless T_link_optical (4x4, from
     tf2_echo <child_frame> camera_color_optical_frame) is given to compose.
-    mount comes from the file, else from parent_frame, else default_mount.
-    Raises FileNotFoundError, or ValueError with the reason.
+    The mount must be eye_in_hand (file, default_mount). Raises
+    FileNotFoundError, or ValueError with the reason.
     """
     p = Path(path).expanduser()
     if not p.is_file():
@@ -589,7 +597,7 @@ def save_extrinsics(path: Union[str, Path], ext: Extrinsics) -> Path:
         'matrix = %s: maps points in the camera color optical frame (x right,'
         % ext.name,
         '  y down, z forward) into the %s frame. Units: meters.' % ext.parent_frame,
-        'mount eye_to_hand -> T_base_camera; eye_in_hand -> T_flange_camera.',
+        'mount eye_in_hand (wrist camera) -> T_flange_camera.',
         'matrix, translation and quaternion (x, y, z, w) must agree. When editing by',
         '  hand, change all of them or delete translation and quaternion.',
         'For reading only: t = [%.1f, %.1f, %.1f] mm, rpy (R = Rz Ry Rx) = '
@@ -646,14 +654,11 @@ def camera_pose_in_base(ext: Extrinsics, T_base_flange: Optional[np.ndarray] = N
     """
     Return T_base_camera (4x4) for a frame captured now.
 
-    eye_to_hand: ext.T (the arm pose is ignored). eye_in_hand: needs
-    T_base_flange at capture time (arm stationary); parent_frame 'tcp' (only
+    Needs T_base_flange at capture time (arm stationary); parent_frame 'tcp' (only
     from Extrinsics built in code: loaded files are converted to 'flange')
     also needs T_flange_tcp = pose6_to_T(robot.tcp_offset). Raises ValueError
     when a required pose is missing or invalid.
     """
-    if ext.mount == 'eye_to_hand':
-        return ext.T.copy()
     if T_base_flange is None:
         raise ValueError('eye_in_hand extrinsics need T_base_flange at capture time')
     T_bf = validate_transform(T_base_flange, 'T_base_flange')

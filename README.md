@@ -41,7 +41,7 @@ flowchart LR
 
 待抓物体的位置由视觉估计；放置区域的位置、相机标定参数和类别到区域的对应关系由配置提供。MuJoCo 相机渲染彩色图和深度图，并加入噪声、深度缺失；场景真值用于渲染、物理计算及评分，不直接作为任务控制器的抓取坐标。
 
-固定相机（`eye_to_hand`）默认连续抓取：**放置 → 抬升 → 在当前位置重新拍照 → 抓取下一个目标**。图像不可用或没有可抓目标时回观察位重试。腕部相机（`eye_in_hand`）每次回观察位取图。整轮结束后默认停在最后动作结束的位置。
+只支持腕端相机（`eye_in_hand`，比赛唯一的相机）：每次放置后回观察位取图，L2 可以示教多个观察视角。固定相机的代码和仿真已删除，固定相机的标定文件会被拒绝。整轮结束后默认停在最后动作结束的位置。
 
 ## 仓库结构
 
@@ -101,11 +101,11 @@ sudo apt install -y python3-pip python3-venv python3-numpy \
 ```bash
 cd ~/vision/ws/src/cube_task
 
-# L1：固定相机，3 个彩色方块
+# L1：腕端相机，3 个彩色方块
 python3 -m cube_task run_task --task L1 --mode sim --seed 0
 
-# L2：腕部相机，6 个果蔬模型
-python3 -m cube_task run_task --task L2 --mode sim --seed 3 --mount eye_in_hand
+# L2：腕端相机，6 个果蔬模型，3 个观察视角
+python3 -m cube_task run_task --task L2 --mode sim --seed 3
 ```
 
 成功时打印 `COMPLETE`、`placed 3/3` 或 `placed 6/6`，以及 `ground truth`。仿真使用虚拟时钟，报告中的任务用时是仿真时间。首次运行默认 KNN 分类的 L2 时，会训练并缓存仿真分类器。
@@ -280,12 +280,12 @@ python3 -m pytest -q -p no:cacheprovider test/
 env -u PYTHONPATH MUJOCO_GL=egl ~/.venvs/piper-mujoco/bin/python -m pytest -q \
   test/test_mujoco_scene.py test/test_mujoco_arm.py test/test_mujoco_integration.py
 
-# 运动学批量评估，包含两种相机安装方式
+# 运动学批量评估
 python3 -m cube_task sim_bench --tasks L1,L2 --seeds 0-9 --jobs 4
 
-# MuJoCo 批量评估：固定相机，保留每轮日志
+# MuJoCo 批量评估：保留每轮日志
 bash scripts/mujoco_run.sh sim_bench --backend mujoco --tasks L1,L2 \
-  --seeds 0-2 --mounts eye_to_hand --save-logs
+  --seeds 0-2 --save-logs
 ```
 
 评估时查看 `correct / wrong / remaining`、完成时间及成功率；MuJoCo 还会统计 `dropped`。`sim_bench` 的退出码 0 表示没有放错或程序异常，仍可能有未完成的轮次，需要同时查看成功率。

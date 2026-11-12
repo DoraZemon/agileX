@@ -12,7 +12,7 @@ from cube_task.core.zones import parse_zone
 from cube_task.robot.kinematics import flange_to_tcp_from_cfg, PiperKinematics
 from cube_task.robot.safety import SafeArm, SafetyGuard
 from cube_task.robot.sim_arm import SimArm
-from cube_task.sim.scenarios import EYE_TO_HAND_PARK_JOINTS, make_scenario, scenario_config_overlay
+from cube_task.sim.scenarios import make_scenario, scenario_config_overlay
 from cube_task.tools import common, onsite
 from cube_task.tools import teach_poses as tp
 from cube_task.tools.ui import Ui
@@ -22,9 +22,11 @@ import yaml
 
 WS = {'x': [0.08, 0.60], 'y': [-0.40, 0.40], 'z': [-0.05, 0.50], 'r_min': 0.10, 'r_max': 0.62}
 SQUARE = [[0.15, -0.22], [0.45, -0.22], [0.45, 0.22], [0.15, 0.22]]
+#: a wrist observe pose (rad): the camera looks down at the pick area
+OBSERVE_Q = (0.0, 0.486, -0.47, 0.0, 1.168, 0.0)
 
 
-def sim_cfg(task='L1', mount='eye_to_hand'):
+def sim_cfg(task='L1', mount='eye_in_hand'):
     base = load_config(use_overlays=False)
     world, info = make_scenario(task, 0, mount=mount)
     cfg = Config(deep_merge(base.data, scenario_config_overlay(info)), base.root, [])
@@ -193,42 +195,6 @@ def test_pick_polygon_from_touches():
     assert bad is None and any('table z -200 mm' in p for p in problems)
 
 
-# ------------------------------------------------------------------ gripper in view
-def test_table_hit_and_gripper_points():
-    T_cam = np.eye(4)
-    T_cam[:3, :3] = np.diag([1.0, -1.0, -1.0])      # looking straight down from z = 1 m
-    T_cam[:3, 3] = [0.0, 0.0, 1.0]
-    assert np.allclose(tp.table_hit_xy([0.1, 0.0, 0.5], T_cam, 0.0), [0.2, 0.0])
-    assert tp.table_hit_xy([0.1, 0.0, 1.5], T_cam, 0.0) is None
-    pts = tp.gripper_points(top_down_T(0.3, 0.0, 0.1, 0.0), 0.07)
-    assert pts.shape == (9, 3) and np.allclose(pts[0], [0.3, 0.0, 0.1])
-    assert sorted(set(np.round(pts[1:, 2], 6))) == [0.1, 0.15]
-    assert sorted(np.round(np.ptp(pts[1:, :2], axis=0), 6)) == [0.02, 0.094]
-
-
-def test_gripper_in_view_with_the_sim_camera():
-    cfg, _w, info = sim_cfg()
-    T_bc = info['T_base_camera']
-    over = top_down_T(0.30, 0.0, 0.15, 0.0)
-    assert tp.gripper_in_view(over, T_bc, SQUARE, 0.0, 0.07)
-    ok, msg = tp.observe_view_check(over, T_bc, SQUARE, 0.0, 0.07)
-    assert not ok and 'TCP' in msg and 'fingertip box corners' in msg
-    park = PiperKinematics('piper').fk(EYE_TO_HAND_PARK_JOINTS) @ flange_to_tcp_from_cfg(cfg)
-    assert tp.gripper_in_view(park, T_bc, SQUARE, 0.0, 0.07) == []
-    assert tp.observe_view_report(cfg, park)[0] is True
-    assert tp.observe_view_report(cfg, over)[0] is False
-    beside = top_down_T(0.30, -0.33, 0.15, 0.0)      # over a zone, outside the pick area
-    assert tp.observe_view_check(beside, T_bc, SQUARE, 0.0, 0.07)[0] is True
-    c2 = cfg.copy()
-    c2.set('camera.extrinsics_inline', None)
-    c2.set('camera.extrinsics_file', '')
-    ok, msg = tp.observe_view_report(c2, over)
-    assert ok is None and 'skipped' in msg
-    # A hand-edited, malformed polygon skips the check instead of failing the command.
-    assert tp.observe_view_report(cfg, park, polygon=[[0, 0], [1, 'x'], [2, 2]])[0] is None
-    assert tp.observe_view_report(cfg, park, polygon=5)[0] is None
-
-
 # ------------------------------------------------------------------ YAML mapping / checks
 def test_apply_changes_merges_and_validate_poses():
     existing = {'zones': {'zone_red': {'center': [0.1, 0.2, 0.0], 'label': 'red'},
@@ -280,8 +246,7 @@ def test_zone_reach_rows_ok_tilt_and_unreachable():
 def test_pose_report_selfcheck_and_post_write_report():
     cfg, _w, _i = sim_cfg()
     kin = PiperKinematics('piper')
-    assert tp.pose_report(cfg, kin) == [
-        '[ OK ] observe pose: the gripper is outside the camera view of the pick area']
+    assert tp.pose_report(cfg, kin) == []                  # taught joints within the limits
     assert tp.check_tasks(cfg) == ['L1'] and tp.check_tasks(cfg, 'L2') == ['L2']
     assert tp.selfcheck_failures(cfg, ['L1'], 'sim') == [
         'self check (L1, config only): no FAIL items']
@@ -468,7 +433,7 @@ def test_main_real_mode_only_reads_the_arm(tmp_path, monkeypatch):
     def human(prompt):
         arm = held.get('arm')
         if 'Drag the arm to the observe pose' in prompt:
-            arm.inner.set_joints(EYE_TO_HAND_PARK_JOINTS)
+            arm.inner.set_joints(OBSERVE_Q)
         elif 'center of zone zone_a' in prompt:
             assert onsite.sim_drag_tcp(arm, held['cfg'], top_down_T(0.20, 0.30, 0.004, 0.0))
 
@@ -482,7 +447,7 @@ def test_main_real_mode_only_reads_the_arm(tmp_path, monkeypatch):
     assert TeachModeSimArm.commands == [] and 'failed' not in text
     data = yaml.safe_load((site / 'poses.yaml').read_text(encoding='utf-8'))
     assert np.allclose(data['zones']['zone_a']['center'], [0.20, 0.30, 0.004], atol=1e-4)
-    assert np.allclose(data['robot']['poses']['observe_joints'], EYE_TO_HAND_PARK_JOINTS,
+    assert np.allclose(data['robot']['poses']['observe_joints'], OBSERVE_Q,
                        atol=1e-4)
     assert any(p.endswith('then Enter (q = cancel): ') for p in script.prompts)
     assert 'This tool only reads the arm; it never moves it.' in text

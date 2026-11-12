@@ -1,8 +1,7 @@
 """
 RGB-D camera rendered by MuJoCo (core.interfaces.CameraSource).
 
-MujocoCamera renders the task camera of a MujocoWorld ('task_cam' fixed in
-the world for eye_to_hand, 'wrist_cam' on link6 for eye_in_hand) at the
+MujocoCamera renders the task camera of a MujocoWorld ('wrist_cam' on link6) at the
 current physics state with mujoco.Renderer (offscreen, MUJOCO_GL=egl).
 Depth is the z-depth in the optical frame in meters (MuJoCo's linearized
 depth buffer), 0 where nothing was hit. The intrinsics are those of the
@@ -89,7 +88,7 @@ class MujocoCamera(CameraSource):
             base = world.intrinsics
             self._intr = intrinsics_for_fovy(float(world.model.cam_fovy[self._cam_id]),
                                              base.width, base.height)
-        self.mount = str(world.info.get('mount', 'eye_to_hand'))
+        self.mount = str(world.info.get('mount', 'eye_in_hand'))
         self.noise_std = ns
         self.dropout = dp
         self.color_noise = cn

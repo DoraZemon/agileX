@@ -7,8 +7,8 @@ build_scene(info) turns a scenario into one MJCF model: the menagerie PiPER
 table_z (the lowest point of the robot base, so the base stands on it), the
 place zones (flat mats: visual boxes without collision; walled bins and trays:
 floor + 4 walls with collision), the scenario objects as free bodies with
-realistic masses and friction, and the cameras: 'task_cam' (eye_to_hand) or
-'wrist_cam' on link6 (eye_in_hand), plus 'overview_cam' and 'top_cam' for
+realistic masses and friction, and the cameras: the task camera 'wrist_cam' on
+link6 (the competition's only camera), plus 'overview_cam' and 'top_cam' for
 videos. World frame == robot base frame. Inside MuJoCo the MuJoCo model is the
 robot: its own kinematics define the flange (link6) and the TCP site.
 
@@ -61,7 +61,6 @@ FLANGE_BODY = 'link6'
 BASE_BODY = 'base_link'
 TCP_SITE = 'tcp'
 FLANGE_SITE = 'flange'
-TASK_CAM = 'task_cam'
 WRIST_CAM = 'wrist_cam'
 OVERVIEW_CAM = 'overview_cam'
 TOP_CAM = 'top_cam'
@@ -84,7 +83,6 @@ TABLE_Y = (-0.70, 0.70)
 TABLE_THICKNESS = 0.03
 TABLE_HEIGHT = 0.75
 TABLE_FRICTION = (0.6, 0.005, 0.0001)
-CEILING_Z = 1.6                      # the eye_to_hand camera hangs from a pole up to here
 BIN_FLOOR = 0.003                    # bin / tray floor thickness; objects rest on it
 MAT_THICKNESS = 0.0005               # flat mats: visual only, objects rest on the table
 
@@ -131,7 +129,7 @@ GRIPPER_WIDTH_RANGE = (0.04, 0.12)
 
 # Offscreen multisampling. 0: depth (and color) are sampled at pixel centers,
 # exact to ~0.01 mm. With MSAA the depth resolve takes an off-center sample:
-# -0.5 mm at 0.74 m on the tilted table of the eye_to_hand view (4 samples).
+# -0.5 mm at 0.74 m on a tilted table view (4 samples).
 # A video renderer may set model.vis.quality.offsamples = 4 before creating its
 # own mujoco.Renderer for smoother frames.
 OFFSCREEN_SAMPLES = 0
@@ -672,19 +670,6 @@ def _add_environment(root: ET.Element, table_z: float, table_color_bgr: Sequence
     return asset, wb
 
 
-def _eye_to_hand_camera(wb: ET.Element, T_base_camera: np.ndarray, fovy: float,
-                        table_z: float) -> None:
-    """Add task_cam with a housing and a pole from it up to the ceiling (outside its view)."""
-    _camera(wb, TASK_CAM, T_base_camera, fovy)
-    _camera_housing(wb, TASK_CAM, T_base_camera)
-    back = T_base_camera[:3, 3] - 0.015 * T_base_camera[:3, 2]
-    top = table_z + CEILING_Z
-    if top > float(back[2]) + 0.02:
-        _el(wb, 'geom', name=TASK_CAM + '_pole', type='cylinder',
-            size=[0.010, (top - back[2]) / 2.0], pos=[back[0], back[1], (top + back[2]) / 2.0],
-            rgba=[0.25, 0.25, 0.27, 1.0], contype=0, conaffinity=0, group=1)
-
-
 def _video_cameras(wb: ET.Element) -> None:
     for name, (eye, target, hint, fovy) in ((OVERVIEW_CAM, OVERVIEW_VIEW), (TOP_CAM, TOP_VIEW)):
         _camera(wb, name, _look_at(eye, target, hint), fovy)
@@ -757,8 +742,9 @@ def build_scene(info: Dict[str, Any], cfg: Any = None, assets_dir: Optional[str]
     """
     mj = require_mujoco()
     task, mount = str(info['task']), str(info['mount'])
-    if mount not in ('eye_to_hand', 'eye_in_hand'):
-        raise ValueError('unknown camera mount %r' % mount)
+    if mount != 'eye_in_hand':
+        raise ValueError('camera mount %r: only the wrist camera (eye_in_hand) is simulated'
+                         % mount)
     seed, difficulty = int(info['seed']), str(info.get('difficulty', 'normal'))
     sim_world = _scenario_world(info, world)
     assets = assets_dir_for(cfg, assets_dir)
@@ -819,8 +805,6 @@ def build_scene(info: Dict[str, Any], cfg: Any = None, assets_dir: Optional[str]
         if inside:
             T[2, 3] += max(float(z.center[2]) for z in inside) - table_z
         bodies[obj.name] = _add_object(wb, asset, obj, T, materials)
-    if mount == 'eye_to_hand':
-        _eye_to_hand_camera(wb, np.asarray(info['T_base_camera'], dtype=float), fovy, table_z)
     _video_cameras(wb)
     _el(_el(root, 'contact'), 'exclude', body1=FINGER_BODIES[0], body2=FINGER_BODIES[1])
     path = _write_xml(assets, root, '%s_%s_%s_s%d' % (task, mount, difficulty, seed))
@@ -878,7 +862,7 @@ def _make_meta(mj, m, info: Dict[str, Any], geo: Dict[str, Any], home: Sequence[
 
     mount = info['mount']
     cams = camera_table(m)
-    task_cam = WRIST_CAM if mount == 'eye_in_hand' else TASK_CAM
+    task_cam = WRIST_CAM
     intr = info['intrinsics']
     T_cam = cams[task_cam]['T_parent_camera']
     return {
@@ -901,8 +885,7 @@ def _make_meta(mj, m, info: Dict[str, Any], geo: Dict[str, Any], home: Sequence[
                          for k, v in cams.items()},
         'intrinsics': intrinsics_for_fovy(cams[task_cam]['fovy'], intr.width,
                                           intr.height).to_dict(),
-        'T_base_camera': _as_list(T_cam) if mount == 'eye_to_hand' else None,
-        'T_flange_camera': _as_list(T_cam) if mount == 'eye_in_hand' else None,
+        'T_flange_camera': _as_list(T_cam),
         'zone_bodies': dict(zone_bodies), 'object_bodies': dict(bodies),
         'objects': [{'name': o.name, 'label': o.label, 'body': bodies[o.name]}
                     for o in sim_world.objects],

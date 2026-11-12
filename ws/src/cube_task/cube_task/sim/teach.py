@@ -16,7 +16,7 @@ import numpy as np
 _LOG = logging.getLogger('cube_task.sim.teach')
 
 
-def collect_sim_samples(seeds: Iterable[int], mount: str = 'eye_to_hand', task: str = 'L2',
+def collect_sim_samples(seeds: Iterable[int], mount: str = 'eye_in_hand', task: str = 'L2',
                         match_dist: float = 0.02):
     """Return (X, y, feature_names) from perception on simulated scenes."""
     from ..camera.factory import make_camera
@@ -46,7 +46,7 @@ def collect_sim_samples(seeds: Iterable[int], mount: str = 'eye_to_hand', task: 
         cam.stop()
         if frame is None:
             continue
-        T_bf = arm.get_flange_pose().value if info['mount'] == 'eye_in_hand' else None
+        T_bf = arm.get_flange_pose().value
         res = Perception(cfg).process(frame, camera_pose_in_base(extrinsics_from_cfg(cfg), T_bf))
         for d in res.valid_detections():
             c = np.asarray(d.center_base[:2], dtype=float)
@@ -60,7 +60,7 @@ def collect_sim_samples(seeds: Iterable[int], mount: str = 'eye_to_hand', task: 
     return np.array(X), y, names
 
 
-def train_knn_from_sim(out: Path, mount: str = 'eye_to_hand', n_scenes: int = 40,
+def train_knn_from_sim(out: Path, mount: str = 'eye_in_hand', n_scenes: int = 40,
                        first_seed: int = 100, k: int = 3,
                        max_distance: float = 3.0) -> Tuple[Path, Optional[float]]:
     """Train and save a KNN model; return (path, leave-one-out accuracy)."""

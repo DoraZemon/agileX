@@ -1,7 +1,7 @@
 """
 Simulated RGB-D camera rendering a SimWorld (core.interfaces.CameraSource).
 
-Eye-to-hand: fixed T_base_camera. Eye-in-hand: T_base_camera =
+Wrist camera (eye_in_hand): the camera pose is
 arm.get_flange_pose().value @ T_flange_camera at capture time, so the arm
 must be stationary while capturing, as on the real robot. Time stamps come
 from the injected clock; frames are produced at FRAME_PERIOD_S.
@@ -31,30 +31,27 @@ class SimCamera(CameraSource):
     Render frames of a SimWorld at the clock's current time.
 
     noise_std: depth noise std (m) at 0.5 m (grows with z^2); dropout:
-    random invalid depth fraction; seed: noise generator seed. Exactly one of
-    T_base_camera (eye-to-hand) or T_flange_camera + arm (eye-in-hand).
+    random invalid depth fraction; seed: noise generator seed. T_flange_camera:
+    the wrist camera in the flange frame; arm: gives the flange pose.
     """
 
     name = 'sim'
 
     def __init__(self, world: SimWorld, clock: Clock, intrinsics: CameraIntrinsics,
-                 T_base_camera: Any = None, T_flange_camera: Any = None, arm: Any = None,
+                 T_flange_camera: Any = None, arm: Any = None,
                  noise_std: float = 0.0008, dropout: float = 0.002, seed: int = 0):
-        if (T_base_camera is None) == (T_flange_camera is None):
-            raise ValueError('SimCamera needs exactly one of T_base_camera / T_flange_camera')
-        if T_flange_camera is not None and arm is None:
-            raise ValueError('eye-in-hand SimCamera needs the arm')
+        if T_flange_camera is None:
+            raise ValueError('SimCamera needs T_flange_camera (the wrist camera)')
+        if arm is None:
+            raise ValueError('the wrist SimCamera needs the arm')
         ns, dp = float(noise_std), float(dropout)
         if not math.isfinite(ns) or ns < 0.0 or not math.isfinite(dp) or not 0.0 <= dp < 1.0:
             raise ValueError('bad noise_std %r / dropout %r' % (noise_std, dropout))
         self.world = world
         self.clock = clock
         self._intr = intrinsics
-        self.mount = 'eye_to_hand' if T_base_camera is not None else 'eye_in_hand'
-        self.T_base_camera = None if T_base_camera is None else check_pose(
-            T_base_camera, 'T_base_camera')
-        self.T_flange_camera = None if T_flange_camera is None else check_pose(
-            T_flange_camera, 'T_flange_camera')
+        self.mount = 'eye_in_hand'
+        self.T_flange_camera = check_pose(T_flange_camera, 'T_flange_camera')
         self.arm = arm
         self.noise_std = ns
         self.dropout = dp
@@ -114,8 +111,6 @@ class SimCamera(CameraSource):
     # ------------------------------------------------------------- capture
     def current_T_base_camera(self) -> Optional[np.ndarray]:
         """Return the true camera pose now, or None when the arm pose is unavailable."""
-        if self.T_base_camera is not None:
-            return self.T_base_camera.copy()
         st = self.arm.get_flange_pose()
         if st is None or st.value is None:
             return None

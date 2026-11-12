@@ -1208,7 +1208,7 @@ def prepare_pose(args, s, ui) -> bool:
         ui.say('--observe only moves the real arm; ignored in %s mode' % args.mode)
         return True
     if s.arm is None:
-        ui.say('--observe needs the arm (it did not connect, or --no-arm was given)')
+        ui.say('--observe needs the arm (it did not connect)')
         return False
     try:
         speed, note = resolve_speed(s.cfg, args.speed)
@@ -1242,8 +1242,6 @@ def build_parser() -> argparse.ArgumentParser:
                         'in this session (default: keep them)')
     p.add_argument('--average', type=int, default=None,
                    help='frames per view, median depth (default camera.frames_to_average)')
-    p.add_argument('--no-arm', action='store_true',
-                   help='real mode: do not connect the arm (eye_to_hand only)')
     p.add_argument('--observe', action='store_true',
                    help='real mode: move to the observe pose first (asks before moving)')
     p.add_argument('--speed', type=int, default=None,
@@ -1308,27 +1306,20 @@ def main(argv=None, ui=None) -> int:
     from ..perception.factory import task_labels
     allowed = task_labels(cfg, args.task)
     out = output_path(cfg, args.mode, args.site_dir, overlay_file(cfg, 'colors.yaml'))
-    mount = str(cfg.get('camera.mount', 'eye_to_hand'))
-    if args.mode == 'real' and args.no_arm and (args.observe or mount == 'eye_in_hand'):
-        ui.say('--no-arm does not work with %s: the arm is needed'
-               % ('--observe' if args.observe else 'an eye_in_hand camera'))
-        return 2
     try:
-        return _run(args, ui, cfg_world_info, opts, allowed, out, mount)
+        return _run(args, ui, cfg_world_info, opts, allowed, out)
     finally:
         ui.close()
 
 
-def _run(args, ui, cfg_world_info, opts: RangeOptions, allowed: Sequence[str], out: Path,
-         mount: str) -> int:
+def _run(args, ui, cfg_world_info, opts: RangeOptions, allowed: Sequence[str],
+         out: Path) -> int:
     """Open the session and run the command loop; return the exit code."""
-    use_arm = args.mode != 'real' or not args.no_arm
-    with open_session(args, arm=use_arm, camera=True, perception=False,
+    with open_session(args, arm=True, camera=True, perception=False,
                       connect=args.mode != 'real', cfg_world_info=cfg_world_info) as s:
-        need_arm = mount == 'eye_in_hand' or bool(args.observe)
-        if not connect_arm_readonly(s, ui, required=need_arm,
+        if not connect_arm_readonly(s, ui, required=True,
                                     why='the observe motion' if args.observe
-                                    else 'eye_in_hand camera poses'):
+                                    else 'wrist camera poses'):
             return 2
         if not prepare_pose(args, s, ui):
             return 2

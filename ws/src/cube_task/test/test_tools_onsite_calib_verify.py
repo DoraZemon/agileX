@@ -48,24 +48,6 @@ def test_trans_is_pure_translation():
     assert np.allclose(T[:3, 3], [0.001, -0.002, 0.003])
 
 
-@pytest.mark.parametrize('seed', [0, 1, 2])
-def test_eye_to_hand_correction_restores_true_pose(seed):
-    T_true = make_T(rpy_to_rot(-2.57, 0.0, 1.5708), (0.70, 0.0, 0.62))
-    T_est = perturb_pose(T_true, 0.004, 0.0, np.random.default_rng(seed))
-    P_est = _seen(T_true, T_est, P_TRUE)
-    table_est = _seen(T_true, T_est, T_TABLE)[:, 2]
-    D = _operator(P_TRUE, P_est, table_est)
-    rep = cv.summarize_corrections(D)
-    assert rep['outliers'] == [] and rep['n_z'] == len(P_TRUE)
-    ext = Extrinsics(T=T_est, mount='eye_to_hand', source='perturbed')
-    new = cv.corrected_extrinsics(ext, rep['mean_inliers'])
-    assert np.linalg.norm(T_est[:3, 3] - T_true[:3, 3]) > 0.0039
-    assert np.linalg.norm(new.T[:3, 3] - T_true[:3, 3]) < 0.0005
-    assert rotation_angle(new.T[:3, :3].T @ T_true[:3, :3]) < 1e-6
-    assert np.allclose(new.T, cv.trans(rep['mean_inliers']) @ T_est, atol=1e-7)
-    assert new.mount == 'eye_to_hand' and new.parent_frame == 'base'
-
-
 def _wrist_setup(seed):
     T_bf = top_down_T(0.22, 0.03, 0.30, 0.4) @ make_T(rpy_to_rot(0.2, -0.1, 0.3), (0, 0, 0))
     T_fc = make_T(rpy_to_rot(0.0, 0.0, 1.5708), (0.065, 0.0, 0.035))
@@ -86,7 +68,7 @@ def test_eye_in_hand_correction_restores_true_pose(seed):
     assert rotation_angle(new.T[:3, :3].T @ T_fc[:3, :3]) < 1e-6
     expected = inv_T(T_bf) @ cv.trans(d) @ T_bf @ T_fc_est
     assert np.allclose(new.T, expected, atol=1e-7)
-    # The eye_to_hand rule applied to the flange extrinsics would be wrong here.
+    # Translating T_flange_camera by d directly (ignoring the flange pose) would be wrong.
     assert np.linalg.norm((cv.trans(d) @ T_fc_est)[:3, 3] - T_fc[:3, 3]) > 0.001
 
 
@@ -107,16 +89,18 @@ def test_eye_in_hand_tcp_parent_correction():
 
 
 def test_corrected_extrinsics_metadata():
-    ext = Extrinsics(T=make_T(np.eye(3), (0.5, 0.0, 0.6)), mount='eye_to_hand',
-                     source='official', rms=0.002)
-    new = cv.corrected_extrinsics(ext, [0.001, 0.0, -0.002], rms=0.0004, n=3, stamp='today')
-    assert np.allclose(new.T[:3, 3], [0.501, 0.0, 0.598])
+    ext = Extrinsics(T=make_T(np.eye(3), (0.05, 0.0, 0.03)), mount='eye_in_hand',
+                     source='calib_points', rms=0.002)
+    T_bf = make_T(np.eye(3), (0.30, 0.0, 0.40))
+    new = cv.corrected_extrinsics(ext, [0.001, 0.0, -0.002], T_base_flange=T_bf, rms=0.0004,
+                                  n=3, stamp='today')
+    assert np.allclose(new.T[:3, 3], [0.051, 0.0, 0.028])
     assert new.rms == pytest.approx(0.0004) and new.stamp == 'today'
-    assert new.source.startswith('calib_verify') and 'official' in new.source
-    assert cv.corrected_extrinsics(ext, [0, 0, 0]).rms == pytest.approx(0.002)
-    assert cv.correction_formula(ext) == 'eye_to_hand: T_base_camera <- Trans(d) @ T_base_camera'
+    assert new.source.startswith('calib_verify') and 'calib_points' in new.source
+    assert cv.corrected_extrinsics(ext, [0, 0, 0], T_base_flange=T_bf).rms == pytest.approx(0.002)
+    assert cv.correction_formula(ext).startswith('eye_in_hand: T_flange_camera <- ')
     with pytest.raises(ValueError):
-        cv.corrected_extrinsics(Extrinsics(T=np.eye(4), mount='eye_in_hand'), [0.001, 0, 0])
+        cv.corrected_extrinsics(ext, [0.001, 0, 0])          # no flange pose
 
 
 def test_sample_correction():
@@ -267,7 +251,7 @@ def test_texts():
     h = cv.measure_help()
     assert '+x points forward, away from the robot' in h and "+y points to the robot's left" in h
     assert 'table' in h and 'point' in cv.measure_help(point_mode=True)
-    t = cv.plan_text(None, HOVER, 20, 'eye_to_hand')
+    t = cv.plan_text(None, HOVER, 20, 'eye_in_hand')
     assert '30 mm above its detected top' in t and 'speed 20 %' in t and 'e-stop' in t
 
 
@@ -332,8 +316,7 @@ def _run(tmp_path, argv, answer):
     return code, out.getvalue()
 
 
-@pytest.mark.parametrize('mount, key', [('eye_to_hand', 'sim.T_base_camera'),
-                                        ('eye_in_hand', 'sim.T_flange_camera')])
+@pytest.mark.parametrize('mount, key', [('eye_in_hand', 'sim.T_flange_camera')])
 def test_sim_apply_restores_true_extrinsics(tmp_path, session, mount, key):
     answer, log = _scripted(session)
     code, text = _run(tmp_path, ['--mount', mount, '--extrinsics-error', '0.004', '0.0',

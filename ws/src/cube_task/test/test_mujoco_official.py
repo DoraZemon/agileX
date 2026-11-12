@@ -134,7 +134,7 @@ def make_object(name, label, x=0.30, y=0.0, yaw=0.0, z=0.0, mass=None, material=
     return obj
 
 
-def official_scene(objects, mount='eye_to_hand', cfg=None, clock=None):
+def official_scene(objects, mount='eye_in_hand', cfg=None, clock=None):
     """Build a scene with the official cards and the given objects (materials 'official')."""
     _w, info = make_scenario('L1', 1, mount)
     zones = [SimZone(n, (x, y, 0.0), (CARD_SIZE, CARD_SIZE), 0.0, c, 0.0, label)

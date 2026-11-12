@@ -65,17 +65,17 @@ def _handeye_json(T):
 
 # -------------------------------------------------------------- [onsite] arm-3, [geometry] arm-2
 def test_save_to_a_json_path_writes_json_that_round_trips(tmp_path):
-    ext = Extrinsics(T=T_BC, mount='eye_to_hand', source='official', rms=0.002, stamp='s')
+    ext = Extrinsics(T=T_BC, mount='eye_in_hand', source='official', rms=0.002, stamp='s')
     p = save_extrinsics(tmp_path / 'extrinsics.json', ext)
     data = json.loads(p.read_text(encoding='utf-8'))
-    assert data['mount'] == 'eye_to_hand' and data['parent_frame'] == 'base'
+    assert data['mount'] == 'eye_in_hand' and data['parent_frame'] == 'flange'
     assert any('cube_task camera extrinsics' in line for line in data['_comment'])
     with _capture() as records:
         back = load_extrinsics(p)
     assert not _warnings(records)
     assert np.array_equal(back.T, ext.T)
     assert (back.mount, back.parent_frame, back.source, back.rms, back.stamp) == (
-        'eye_to_hand', 'base', 'official', 0.002, 's')
+        'eye_in_hand', 'flange', 'official', 0.002, 's')
     # YAML paths keep the commented YAML format.
     q = save_extrinsics(tmp_path / 'extrinsics.yaml', ext)
     assert q.read_text(encoding='utf-8').startswith('# cube_task camera extrinsics')
@@ -87,7 +87,7 @@ def test_documented_json_flow_survives_a_site_write(tmp_path):
     site = tmp_path / 'config' / 'site'
     site.mkdir(parents=True)
     _write(site / 'extrinsics.json', _handeye_json(T_BC))
-    cfg = Config({'camera': {'mount': 'eye_to_hand',
+    cfg = Config({'camera': {'mount': 'eye_in_hand',
                              'extrinsics_file': 'config/site/extrinsics.json'}}, tmp_path, [])
     ext = extrinsics_from_cfg(cfg)
     corrected = Extrinsics(T=pose6_to_T([0.005, 0, 0, 0, 0, 0]) @ ext.T, mount=ext.mount,
@@ -100,7 +100,7 @@ def test_documented_json_flow_survives_a_site_write(tmp_path):
 
 
 def test_a_json_file_already_overwritten_with_yaml_still_loads(tmp_path):
-    ext = Extrinsics(T=T_BC, mount='eye_to_hand', source='calib_verify')
+    ext = Extrinsics(T=T_BC, mount='eye_in_hand', source='calib_verify')
     yaml_text = save_extrinsics(tmp_path / 'x.yaml', ext).read_text(encoding='utf-8')
     p = _write(tmp_path / 'extrinsics.json', yaml_text)      # what the old code wrote
     with _capture() as records:
@@ -121,7 +121,7 @@ def test_npy_targets_are_refused_and_left_untouched(tmp_path):
     with pytest.raises(ValueError, match=r'\.npy.*\.yaml'):
         save_extrinsics(p, Extrinsics(T=T_FC, mount='eye_in_hand'))
     assert p.read_bytes() == before
-    assert np.allclose(load_extrinsics(p, default_mount='eye_to_hand').T, T_BC)
+    assert np.allclose(load_extrinsics(p).T, T_BC)
 
 
 def _scripted(answers):
@@ -140,17 +140,17 @@ def test_calib_points_writes_a_loadable_file_for_json_and_npy(tmp_path, name, wr
     out = io.StringIO()
     ui = Ui(headless=True, input_fn=_scripted({'w = write': ['w']}), output=out,
             preview_dir=str(tmp_path / 'preview'))
-    code = cp.main(['--mode', 'sim', '--mount', 'eye_to_hand', '--headless', '--log-dir',
+    code = cp.main(['--mode', 'sim', '--headless', '--log-dir',
                     str(tmp_path), '--set', 'camera.extrinsics_file=config/site/%s' % name],
                    ui=ui)
     text = out.getvalue()
     assert code == 0, text
     path = tmp_path / 'sim_site' / written
     ext = load_extrinsics(path)
-    assert ext.mount == 'eye_to_hand' and ext.source == 'calib_points'
+    assert ext.mount == 'eye_in_hand' and ext.source == 'calib_points'
     assert not (tmp_path / 'sim_site' / 'ext.npy').exists()
     if written.endswith('.json'):
-        assert json.loads(path.read_text(encoding='utf-8'))['mount'] == 'eye_to_hand'
+        assert json.loads(path.read_text(encoding='utf-8'))['mount'] == 'eye_in_hand'
     assert 'to use it: --set camera.extrinsics_file=%s' % path in text
 
 
@@ -199,7 +199,7 @@ def test_tcp_parent_without_tcp_offset_is_refused():
     with pytest.raises(ValueError, match='millimeters'):
         extrinsics_from_dict({'T_tcp_camera': T_FC.tolist(),
                               'tcp_offset': [0, 0, 140, 0, 0, 0]})
-    with pytest.raises(ValueError, match='needs parent_frame base'):
+    with pytest.raises(ValueError, match='wrist camera'):
         extrinsics_from_dict({'mount': 'eye_to_hand', 'parent_frame': 'tcp',
                               'matrix': T_BC.tolist(), 'tcp_offset': [0] * 6})
 
@@ -220,7 +220,7 @@ def test_handeye_json_without_parent_still_loads_as_flange_with_a_warning(tmp_pa
 
 # ------------------------------------------------------------------ [geometry] arm-5
 def test_degrees_under_the_radian_rpy_key_are_refused():
-    d = {'mount': 'eye_to_hand', 'xyz': [0.7, 0.0, 0.62], 'rpy': [-147.171, 0.0, 90.0]}
+    d = {'mount': 'eye_in_hand', 'xyz': [0.7, 0.0, 0.62], 'rpy': [-147.171, 0.0, 90.0]}
     with pytest.raises(ValueError, match=r'rpy \[-147.171, 0.0, 90.0\]: \|angle\| > 2\*pi.*'
                                          r'rpy_deg'):
         extrinsics_from_dict(d)
@@ -229,31 +229,31 @@ def test_degrees_under_the_radian_rpy_key_are_refused():
     assert np.allclose(ext.T[:3, :3], pose6_to_T(
         [0, 0, 0] + [math.radians(v) for v in d['rpy_deg']])[:3, :3])
     # Up to 2*pi is accepted (wrapped angles), nested handeye rpy too.
-    ext = extrinsics_from_dict({'mount': 'eye_to_hand', 'xyz': [0.7, 0, 0.6],
+    ext = extrinsics_from_dict({'mount': 'eye_in_hand', 'xyz': [0.7, 0, 0.6],
                                 'rpy': [2 * math.pi, 0.0, -2 * math.pi]})
     assert np.allclose(ext.T[:3, :3], np.eye(3), atol=1e-9)
     with pytest.raises(ValueError, match='look like degrees'):
-        extrinsics_from_dict({'mount': 'eye_to_hand', 'translation': [0.7, 0, 0.6],
+        extrinsics_from_dict({'mount': 'eye_in_hand', 'translation': [0.7, 0, 0.6],
                               'rpy': [[0.0, 7.0, 0.0]]})
 
 
 # ------------------------------------------------------------------ [sensing] cam-5
 @pytest.mark.parametrize('child', ['camera_link', 'camera_color_frame', 'camera', 'base_link'])
 def test_non_optical_child_frames_are_refused(child):
-    d = {'mount': 'eye_to_hand', 'matrix': T_BC.tolist(), 'child_frame': child}
+    d = {'mount': 'eye_in_hand', 'matrix': T_BC.tolist(), 'child_frame': child}
     with pytest.raises(ValueError) as e:
         extrinsics_from_dict(d, what='ext.yaml')
     msg = str(e.value)
     assert msg.startswith('ext.yaml: ') and 'REP-103' in msg and 'T_link_optical' in msg
     assert 'ros2 run tf2_ros tf2_echo %s camera_color_optical_frame' % child in msg
     with pytest.raises(ValueError, match='REP-103'):
-        Extrinsics(T=T_BC, mount='eye_to_hand', child_frame=child)
+        Extrinsics(T=T_BC, mount='eye_in_hand', child_frame=child)
 
 
 def test_optical_child_frames_are_accepted_in_any_case():
     for child in ('camera_color_optical_frame', 'CAMERA_COLOR_OPTICAL_FRAME',
                   '/camera_color_optical_frame', 'cam_depth_optical_frame', '', None):
-        d = {'mount': 'eye_to_hand', 'matrix': T_BC.tolist(), 'child_frame': child}
+        d = {'mount': 'eye_in_hand', 'matrix': T_BC.tolist(), 'child_frame': child}
         ext = extrinsics_from_dict(d)
         assert ext.child_frame.lower().endswith('_optical_frame')
 
@@ -261,7 +261,7 @@ def test_optical_child_frames_are_accepted_in_any_case():
 def test_T_link_optical_is_composed(tmp_path):
     T_b_link = T_BC @ inv_T(T_LINK_OPTICAL)           # camera_link pose given by organizers
     t, q = T_b_link[:3, 3].tolist(), rot_to_quat(T_b_link[:3, :3]).tolist()
-    d = {'mount': 'eye_to_hand', 'child_frame': 'camera_link', 'translation': t,
+    d = {'mount': 'eye_in_hand', 'child_frame': 'camera_link', 'translation': t,
          'quaternion': q, 'T_link_optical': T_LINK_OPTICAL.tolist()}
     ext = load_extrinsics(_write(tmp_path / 'link.yaml', yaml.safe_dump(d)))
     assert np.allclose(ext.T, T_BC, atol=1e-9)

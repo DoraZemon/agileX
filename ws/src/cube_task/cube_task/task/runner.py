@@ -224,9 +224,9 @@ class TaskRunner:
         self.settle_s = float(cfg.get('camera.settle_s', 0.4))
         self.frame_timeout = float(cfg.get('camera.frame_timeout_s', 2.0))
         self.max_frame_age = float(cfg.get('camera.max_frame_age_s', 1.0))
-        self.mount = str(cfg.get('camera.mount', 'eye_to_hand'))
+        self.mount = 'eye_in_hand'              # the competition's only camera
         self.views = observe_views(cfg)
-        self.multi_view = self.mount == 'eye_in_hand' and len(self.views) > 1
+        self.multi_view = len(self.views) > 1
         self.view_merge = float(cfg.get('runner.view_merge_dist_m', MERGE_DIST))
         self.nominal = {str(k): (float(max(v)), float(min(v)))
                         for k, v in (cfg.get('place.nominal_footprint', {}) or {}).items()
@@ -361,7 +361,7 @@ class TaskRunner:
             if g.error == 'aborted' or self._aborted():
                 return self._refuse(rep, 'aborted', 'aborted before start')
             return self._refuse(rep, 'fault', 'gripper open failed: %s %s' % (g.error, g.detail))
-        if self.mode == 'real' and self.mount == 'eye_in_hand':
+        if self.mode == 'real':
             # The self check could not test the wrist camera's view away from here.
             ok_view, msg = self._check_view_at_observe()
             if self._aborted():
@@ -369,8 +369,7 @@ class TaskRunner:
             if not ok_view:
                 return self._refuse(rep, 'fault',
                                     'pick area not visible from the observe pose: ' + msg)
-        if self.mount == 'eye_in_hand':
-            self._report_view_coverage()
+        self._report_view_coverage()
         if self.start_on_enter:
             # Only an Enter typed after the prompt starts the clock.
             started = self.operator.wait_start(discard_earlier=True)
@@ -591,17 +590,15 @@ class TaskRunner:
         if not float(frame.stamp) > newer or now - float(frame.stamp) > self.max_frame_age:
             return self._obs_failed('stale frame', stamp=frame.stamp, now=now, newer_than=newer)
         self._last_stamp = float(frame.stamp)
-        T_bf = None
-        if self.mount == 'eye_in_hand':
-            extra = (frame.meta or {}).get('extra') or {}
-            if frame.source == 'file' and extra.get('T_base_flange') is not None:
-                # Replay: the recorded flange pose belongs to this frame, not the sim arm.
-                T_bf = np.asarray(extra['T_base_flange'], dtype=float)
-            else:
-                s = self.arm.get_flange_pose()
-                if s is None or float(s.stamp) < float(self._t_arrived):
-                    return self._obs_failed('no flange pose at capture')
-                T_bf = np.asarray(s.value, dtype=float)
+        extra = (frame.meta or {}).get('extra') or {}
+        if frame.source == 'file' and extra.get('T_base_flange') is not None:
+            # Replay: the recorded flange pose belongs to this frame, not the sim arm.
+            T_bf = np.asarray(extra['T_base_flange'], dtype=float)
+        else:
+            s = self.arm.get_flange_pose()
+            if s is None or float(s.stamp) < float(self._t_arrived):
+                return self._obs_failed('no flange pose at capture')
+            T_bf = np.asarray(s.value, dtype=float)
         try:
             from ..core.extrinsics import camera_pose_in_base
             T_bc = camera_pose_in_base(self.ext, T_bf, self.T_flange_tcp)

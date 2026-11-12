@@ -15,13 +15,13 @@ from cube_task.perception.classify_knn import KnnClassifier
 from cube_task.perception.features import FEATURE_NAMES
 from cube_task.perception.pipeline import Perception
 from cube_task.sim.scenarios import make_scenario, scenario_config_overlay
-from cube_task.sim.sim_camera import SimCamera
 from cube_task.sim.world import SimWorld
 from cube_task.tools import teach_classes as tc
 from cube_task.tools.onsite import ground_truth_label
 from cube_task.tools.ui import Ui
 import numpy as np
 import pytest
+from test_task_fakes import still_wrist_camera
 
 D = len(FEATURE_NAMES)
 
@@ -325,8 +325,8 @@ def sim_cfg(info):
 
 
 def render(world, info, seed):
-    cam = SimCamera(world, SimClock(), info['intrinsics'], T_base_camera=info['T_base_camera'],
-                    seed=seed)
+    cam = still_wrist_camera(world, SimClock(), info['intrinsics'],
+                             info['T_base_camera_observe'], seed=seed)
     cam.start()
     frame = cam.get_frame()
     cam.stop()
@@ -429,7 +429,7 @@ def test_sim_session_writes_a_model_that_classifies_a_new_scene(tmp_path):
     knn = KnnClassifier.load(model)
     world, info = make_scenario('L2', 7)
     res = Perception(sim_cfg(info), classifier=knn).process(render(world, info, 7),
-                                                            info['T_base_camera'])
+                                                            info['T_base_camera_observe'])
     pairs = [(d.label, ground_truth_label(world, d)) for d in res.valid_detections()]
     pairs = [p for p in pairs if p[1] is not None]
     assert len(pairs) >= 5, pairs

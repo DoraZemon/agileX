@@ -131,7 +131,7 @@ def test_rays_missing_everything_are_invalid():
 
 def test_noise_deterministic_and_bounded():
     w, info = make_scenario('L1', 0)
-    T = info['T_base_camera']
+    T = info['T_base_camera_observe']
     c1, d1 = render_rgbd(w, SMALL, T, rng=np.random.default_rng(5), noise_std=0.002,
                          dropout=0.01)
     c2, d2 = render_rgbd(w, SMALL, T, rng=np.random.default_rng(5), noise_std=0.002,
@@ -163,13 +163,9 @@ def test_invalid_inputs_raise():
         render_rgbd(w, CameraIntrinsics(0.0, 1.0, 1.0, 1.0, 10, 10), DOWN)
 
 
-@pytest.mark.parametrize('task,mount', [('L2', 'eye_to_hand'), ('L2', 'eye_in_hand')])
-def test_render_speed(task, mount):
-    w, info = make_scenario(task, 1, mount)
-    if mount == 'eye_to_hand':
-        T = info['T_base_camera']
-    else:
-        T = info['T_base_camera_observe']
+def test_render_speed():
+    w, info = make_scenario('L2', 1)
+    T = info['T_base_camera_observe']
     assert len(w.objects) == 6 and any(z.wall_height > 0 for z in w.zones)
     w.update_tcp(make_T(np.eye(3), (0.1, 0.2, 0.3)) @ top_down_T(0, 0, 0, 0), 0.07)
     times = []

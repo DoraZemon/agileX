@@ -185,7 +185,7 @@ def test_observe_joints_outside_limits_fail():
         'teach robot.poses.observe_joints')
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
+@pytest.mark.parametrize('mount', ['eye_in_hand'])
 def test_live_on_the_simulated_rig_reads_without_moving(monkeypatch, capsys, mount):
     from cube_task.robot import sim_arm
     moves = []

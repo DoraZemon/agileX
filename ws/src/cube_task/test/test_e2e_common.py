@@ -26,7 +26,7 @@ slow = pytest.mark.skipif(not SLOW, reason='slow e2e case; set CUBE_TASK_SLOW=1 
 MOTION_COMMANDS = ('move_tcp', 'move_joints', 'gripper')
 
 
-def sim_args(task: str = 'L1', seed: int = 0, mount: str = 'eye_to_hand',
+def sim_args(task: str = 'L1', seed: int = 0, mount: str = 'eye_in_hand',
              difficulty: str = 'normal', extrinsics_error=(0.0, 0.0),
              sets: Sequence[str] = ()) -> argparse.Namespace:
     """Return the Namespace the tools build for ``--mode sim``."""
@@ -97,7 +97,7 @@ class CountingArm:
 class SimRig:
     """One simulated round: session objects, counting arm, in-memory logger."""
 
-    def __init__(self, task: str = 'L1', seed: int = 0, mount: str = 'eye_to_hand',
+    def __init__(self, task: str = 'L1', seed: int = 0, mount: str = 'eye_in_hand',
                  difficulty: str = 'normal', extrinsics_error=(0.0, 0.0),
                  sets: Sequence[str] = ()):
         self.task = task

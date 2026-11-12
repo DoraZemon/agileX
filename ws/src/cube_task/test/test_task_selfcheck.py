@@ -51,11 +51,12 @@ def test_missing_zone_for_mapped_label_and_unmapped_label_warning():
     assert any(m.startswith('[WARN]') and 'blue has no zone' in m for m in msgs)
 
 
-def test_extrinsics_mount_mismatch_and_loader_error(monkeypatch):
+def test_fixed_camera_mount_and_loader_error(monkeypatch):
+    for mode in ('sim', 'real'):
+        cfg = make_cfg(camera__mount='eye_to_hand')
+        ok, msgs = self_check(cfg, 'L1', mode=mode, extrinsics=FakeExt(default_camera_T()))
+        assert not ok and _has(msgs, 'wrist camera')
     cfg = make_cfg()
-    ok, msgs = self_check(cfg, 'L1', mode='sim',
-                          extrinsics=FakeExt(default_camera_T(), 'eye_in_hand'))
-    assert not ok and _has(msgs, 'mount')
 
     def broken(cfg):
         raise ValueError('bad yaml')
@@ -64,11 +65,11 @@ def test_extrinsics_mount_mismatch_and_loader_error(monkeypatch):
     assert not ok and _has(msgs, 'bad yaml')
 
 
-def test_observe_tcp_over_pick_area_fails_for_eye_to_hand_real():
+def test_untaught_observe_pose_warns_in_real_mode():
     cfg = make_cfg()
-    cfg.set('robot.poses.observe_joints', None)        # default observe_tcp is over the area
+    cfg.set('robot.poses.observe_joints', None)        # falls back to observe_tcp
     ok, msgs = self_check(cfg, 'L1', mode='real', extrinsics=FakeExt(default_camera_T()))
-    assert not ok and _has(msgs, 'camera view')
+    assert any(m.startswith('[WARN]') and 'observe_joints is not taught' in m for m in msgs)
     ok, msgs = self_check(cfg, 'L1', mode='sim', extrinsics=FakeExt(default_camera_T()))
     assert ok, msgs
 
@@ -101,7 +102,9 @@ def test_hardware_checks_in_real_mode():
     ok, msgs = self_check(make_cfg(), 'L1', arm=arm, camera=cam, mode='real', extrinsics=ext)
     assert not ok
     assert _has(msgs, 'arm not healthy') and _has(msgs, 'gripper width not readable')
-    assert _has(msgs, 'valid depth')
+    # Away from the observe pose the wrist camera's view only warns (the runner checks it there).
+    assert any(m.startswith('[WARN]') and 'valid depth' in m and 'observe pose' in m
+               for m in msgs)
     cam.none_frames = 5
     ok, msgs = self_check(make_cfg(), 'L1', arm=arm, camera=cam, mode='real', extrinsics=ext)
     assert _has(msgs, 'no camera frame')

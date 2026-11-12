@@ -162,7 +162,7 @@ def test_observe_pose_gripper_leaves_pick_area_unoccluded(mount):
     w, info = sc.make_scenario('L2', 1, mount=mount)
     q = info['observe_joints']
     T_tcp = sc.piper_fk(q) @ pose6_to_T(sc.DEFAULT_TCP_OFFSET)
-    T_bc = info['T_base_camera'] if mount == 'eye_to_hand' else info['T_base_camera_observe']
+    T_bc = info['T_base_camera_observe']
     intr = info['intrinsics']
     _, d_free = render_rgbd(w, intr, T_bc, gripper=False)
     _, d_grip = render_rgbd(w, intr, T_bc, gripper=(T_tcp, 0.07))
@@ -172,19 +172,9 @@ def test_observe_pose_gripper_leaves_pick_area_unoccluded(mount):
     changed = np.abs(d_grip - d_free) > 1e-6
     assert pick.sum() > 20000
     assert not np.any(changed & (pick | objects))
-    if mount == 'eye_to_hand':
-        assert changed.any()                                 # gripper is in the image
-        c = T_tcp[:2, 3]
-        assert not point_in_polygon(c[0], c[1], POLY)
-        assert T_tcp[0, 3] >= 0.08 and 0.10 <= math.hypot(*T_tcp[:2, 3]) <= 0.62
-        Tcb = inv_T(T_bc)
-        for x, y in POLY:
-            p = Tcb[:3, :3] @ np.array([x, y, 0.0]) + Tcb[:3, 3]
-            assert 0 <= intr.fx * p[0] / p[2] + intr.cx < intr.width
-            assert 0 <= intr.fy * p[1] / p[2] + intr.cy < intr.height
 
 
-@pytest.mark.parametrize('task,mount', [('L1', 'eye_to_hand'), ('L2', 'eye_in_hand')])
+@pytest.mark.parametrize('task,mount', [('L1', 'eye_in_hand'), ('L2', 'eye_in_hand')])
 def test_config_overlay(task, mount):
     _, info = sc.make_scenario(task, 6, mount=mount)
     ov = sc.scenario_config_overlay(info, extrinsics_error=(0.004, 1.5))
@@ -204,10 +194,9 @@ def test_config_overlay(task, mount):
         ref = info['zones'][name]
         assert np.allclose(z.center, ref.center) and z.size == pytest.approx(ref.size)
         assert z.wall_height == ref.wall_height and z.label == ref.label
-    key = 'T_base_camera' if mount == 'eye_to_hand' else 'T_flange_camera'
-    other = 'T_flange_camera' if mount == 'eye_to_hand' else 'T_base_camera'
+    key = 'T_flange_camera'
     T_true = np.array(merged['sim'][key])
-    assert merged['sim'][other] is None
+    assert merged['sim'].get('T_base_camera') is None
     assert np.allclose(T_true, info[key])
     inline = merged['camera']['extrinsics_inline']
     assert set(inline) == {'mount', 'matrix'} and inline['mount'] == mount

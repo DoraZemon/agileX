@@ -53,7 +53,7 @@ from .common import add_common_args, ensure_sim_knn, load_cfg_for, open_session,
 
 _LOG = logging.getLogger('cube_task.tools.sim_bench')
 
-MOUNTS = ('eye_to_hand', 'eye_in_hand')
+MOUNTS = ('eye_in_hand',)
 DIFFICULTIES = ('normal', 'hard')
 #: bench fault name -> SimArm.inject kind
 ARM_FAULTS = {'grasp_miss': 'grasp_miss', 'drop': 'drop', 'timeout': 'timeout',
@@ -446,8 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--tasks', default='L1,L2', help='comma list of L1, L2 (default L1,L2)')
     p.add_argument('--seeds', default='0-9', help="seeds, e.g. '0-19' or '0,3,5-7'")
     p.add_argument('--mounts', default='eye_in_hand',
-                   help='comma list of eye_in_hand, eye_to_hand (default eye_in_hand, the '
-                   'competition camera)')
+                   help='camera mount: eye_in_hand (the only competition camera)')
     p.add_argument('--difficulty', default='normal', help='comma list of normal, hard')
     p.add_argument('--extrinsics-error', type=float, nargs=2, default=(0.0, 0.0),
                    metavar=('M', 'DEG'), help='error of the extrinsics estimate (m, deg)')
