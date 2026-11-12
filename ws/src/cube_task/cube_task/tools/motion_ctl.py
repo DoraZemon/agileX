@@ -94,8 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help='MoveIt bridge: serve FollowJointTrajectory + joint feedback')
     mv.add_argument('--execute', action='store_true',
                     help='really move the arm; without it trajectory goals are refused')
-    mv.add_argument('--waypoint-step', type=float, default=0.15, metavar='RAD',
-                    help='joint distance between executed waypoints (default 0.15)')
+    mv.add_argument('--waypoint-step', type=float, default=0.0, metavar='RAD',
+                    help='0 (default): send only the final point, one smooth move; > 0: '
+                         'follow the planned path with blocking waypoints this far apart '
+                         '(stop-and-go)')
     jt = sub.add_parser('joints', parents=[parent],
                         help='small joint move: --joint N --delta RAD, or --to q1..q6')
     jt.add_argument('--joint', type=int, choices=range(1, 7), metavar='N',

@@ -15,9 +15,12 @@ clearance, joint path sweep, health), the gripper through ``SafeArm.gripper``. N
 bypasses SafeArm. Without ``execute`` a trajectory goal is refused (plan-only): RViz
 planning and animation work, the arm does not move.
 
-MoveIt's trajectory is resampled to a few waypoints (``waypoint_step`` rad apart in
-joint space); the controller interpolates between them itself, so the executed path
-is a polyline of the planned one, not the exact planned trajectory.
+By default (``waypoint_step`` 0) only the final point of MoveIt's trajectory is sent:
+one smooth controller move_j along the straight joint-space line, whose whole path
+SafeArm checks first. Each blocking waypoint stops and settles the arm, so
+``waypoint_step`` > 0 (rad between waypoints) follows the planned path more closely but
+moves stop-and-go. A cancel (RViz Stop, Ctrl-C of move_group) sets the arm's abort
+event: the move in progress is held where it is.
 """
 from __future__ import annotations
 
@@ -32,13 +35,24 @@ _LOG = logging.getLogger('cube_task.robot.moveit_bridge')
 
 ARM_JOINTS = ('joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6')
 GRIPPER_JOINT = 'gripper'
-#: default joint-space distance (rad) between two executed waypoints.
-WAYPOINT_STEP = 0.15
+#: default joint-space distance (rad) between two executed waypoints; 0 = final point only.
+WAYPOINT_STEP = 0.0
 #: never send more waypoints than this for one trajectory.
 MAX_WAYPOINTS = 24
 
 
-def resample_waypoints(positions: Sequence[Sequence[float]], step: float = WAYPOINT_STEP,
+def execution_waypoints(positions: Sequence[Sequence[float]], step: float = WAYPOINT_STEP,
+                        max_points: int = MAX_WAYPOINTS) -> List[np.ndarray]:
+    """Return the points to execute: the final one when step <= 0, else resample_waypoints."""
+    pts = [np.asarray(p, dtype=float).reshape(-1) for p in positions]
+    if not pts:
+        return []
+    if step <= 0.0:
+        return [pts[-1]]
+    return resample_waypoints(pts, step, max_points)
+
+
+def resample_waypoints(positions: Sequence[Sequence[float]], step: float = 0.15,
                        max_points: int = MAX_WAYPOINTS) -> List[np.ndarray]:
     """
     Return waypoints of a joint trajectory: a point whenever any joint moved `step` rad.
@@ -81,6 +95,10 @@ class MoveItBridge:
         self.execute = bool(execute)
         self.waypoint_step = float(waypoint_step)
         self.busy = threading.Lock()
+        # Shared with the arm (SafeArm passes it on), so a cancel holds a move in progress.
+        self._abort = threading.Event()
+        if hasattr(arm, 'set_abort_event'):
+            arm.set_abort_event(self._abort)
         if not rclpy.ok():
             rclpy.init()
         self.node = rclpy.create_node(node_name)
@@ -92,15 +110,17 @@ class MoveItBridge:
         self._arm_server = ActionServer(
             self.node, FollowJointTrajectory, 'arm_controller/follow_joint_trajectory',
             execute_callback=self._exec_arm, goal_callback=self._goal,
-            cancel_callback=lambda _g: CancelResponse.ACCEPT, callback_group=self._cb)
+            cancel_callback=self._cancel, callback_group=self._cb)
         self._grip_server = ActionServer(
             self.node, FollowJointTrajectory, 'gripper_controller/follow_joint_trajectory',
             execute_callback=self._exec_gripper, goal_callback=self._goal,
             cancel_callback=lambda _g: CancelResponse.ACCEPT, callback_group=self._cb)
+        self._CancelResponse = CancelResponse
         self.node.get_logger().info(
-            'MoveIt bridge up: %s (waypoint step %.2f rad)' % (
+            'MoveIt bridge up: %s (%s)' % (
                 'EXECUTING on the arm' if self.execute else 'PLAN-ONLY, trajectories refused',
-                self.waypoint_step))
+                'final point only, one smooth move' if self.waypoint_step <= 0 else
+                'waypoints %.2f rad apart' % self.waypoint_step))
 
     # ------------------------------------------------------------ feedback
     def _publish(self) -> None:
@@ -129,6 +149,12 @@ class MoveItBridge:
             return self._GoalResponse.REJECT
         return self._GoalResponse.ACCEPT
 
+    def _cancel(self, _goal) -> object:
+        """Accept a cancel and hold the move in progress (the arm checks the abort event)."""
+        self._abort.set()
+        self.node.get_logger().warning('trajectory cancel requested: holding the arm')
+        return self._CancelResponse.ACCEPT
+
     def _result(self, code: int, text: str):
         res = self._Action.Result()
         res.error_code = code
@@ -144,21 +170,25 @@ class MoveItBridge:
             return self._result(A.Result.INVALID_JOINTS, 'joints %s' % names)
         order = [names.index(j) for j in ARM_JOINTS]
         pts = [[p.positions[i] for i in order] for p in traj.points]
-        way = resample_waypoints(pts, self.waypoint_step)
+        way = execution_waypoints(pts, self.waypoint_step)
         if not way:
             handle.succeed()
             return self._result(A.Result.SUCCESSFUL, '')
         if not self.busy.acquire(blocking=False):
             handle.abort()
             return self._result(A.Result.INVALID_GOAL, 'another trajectory is executing')
+        self._abort.clear()                 # a cancel of an earlier goal must not stop this one
         try:
-            self.node.get_logger().info('executing %d waypoints' % len(way))
+            self.node.get_logger().info('executing %d waypoint(s)' % len(way))
             for k, q in enumerate(way):
                 if handle.is_cancel_requested:
                     self.arm.stop()
                     handle.canceled()
                     return self._result(A.Result.SUCCESSFUL, 'canceled')
                 m = self.arm.move_joints(q)
+                if handle.is_cancel_requested or m.error == 'aborted':
+                    handle.canceled()
+                    return self._result(A.Result.SUCCESSFUL, 'canceled')
                 if not m.ok:
                     self.arm.stop()
                     handle.abort()
@@ -168,6 +198,7 @@ class MoveItBridge:
             handle.succeed()
             return self._result(A.Result.SUCCESSFUL, '')
         finally:
+            self._abort.clear()
             self.busy.release()
 
     def _exec_gripper(self, handle):

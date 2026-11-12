@@ -90,7 +90,7 @@ if [ "$CAM_DRIVER" = realsense ]; then
     SETS=("camera.ros.color_topic=$COLOR_TOPIC" "camera.ros.depth_topic=$DEPTH_TOPIC"
           "camera.ros.info_topic=$INFO_TOPIC")
 fi
-if ! "$PY" - "${SETS[@]}" <<'EOF'
+"$PY" - "${SETS[@]}" <<'EOF'
 import sys
 import time
 
@@ -136,16 +136,22 @@ try:
           % (d.shape[1], d.shape[0], 100.0 * valid.mean(),
              float(np.median(cv)) if cv.size else float('nan')))
     if valid.mean() < 0.3:
-        print('  less than 30% valid depth: too close (< 0.15 m), lens cap, or IR blocked')
-        sys.exit(1)
+        print('  less than 30% valid depth: scene too close (< 0.2 m) or too far, protective '
+              'film / lens cap on the IR window, or a black / shiny surface')
+        sys.exit(3)
 finally:
     cam.stop()
 EOF
-then
+rc=$?
+if [ "$rc" = 3 ]; then
+    warn 'RGB-D frames OK but little valid depth: aim the camera at the table 0.3-0.6 m away' \
+         'and check the depth image in RViz (next step)'
+elif [ "$rc" != 0 ]; then
     fail 'cube_task could not read RGB-D frames (see above)'
     exit 1
+else
+    ok 'cube_task reads RGB-D frames'
 fi
-ok 'cube_task reads RGB-D frames'
 
 if [ "$RVIZ" = 0 ]; then
     say 'done (--no-rviz)'
