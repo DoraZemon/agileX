@@ -13,8 +13,21 @@ Commands (headless: type a line; window: press the key, Enter = type a line)
                              ('0 lemon; all apple': #0 lemon, the rest apple)
     c new view (move / rotate the objects first)   u undo the last labeling
     e leave-one-out evaluation   w write the model   s status   h help
+    single <label> / single off   single-object mode on / off (see below)
+    y   accept the predictions shown for the unlabeled instances of this view
     g sim only: label this view from the ground truth
     q quit (asks to write unsaved samples)
+
+Single-object mode (--label LABEL or 'single LABEL'): one object in view; every
+view with exactly one valid instance is labeled LABEL by itself. With --auto
+(window mode) a view is captured whenever the arm, dragged in drag-teach mode,
+has been still for AUTO_STILL_S at a pose AUTO_MOVE_M / AUTO_MOVE_DEG away from
+the last view: drag the camera around one object, then 'single <next label>'.
+
+Predictions: once the samples hold two classes, every new view outside
+single-object mode is classified with them (shown as '#n label?'). Fix the
+wrong ones by number ('2 potato'), then y accepts the rest; the status (s)
+reports how many predictions were right. Accepted views are samples too.
 
 Labels are checked against tasks.<task>.labels: a label outside the list (or,
 when the list is empty, every new label) needs a confirmation. Aim for at
@@ -35,6 +48,7 @@ samples per class, accuracy, confusion, feature names, created and source.
 Example commands
     teach_classes --task L2
     teach_classes --task L2 --headless --append
+    teach_classes --task L2 --label pear --auto       (drag-teach, one object per class)
     teach_classes --task L2 --from-dir ~/vision_data/20261112_apple_1 banana=/data/b1
     teach_classes --mode sim --task L2 --headless
 """
@@ -63,6 +77,7 @@ from .onsite import (add_onsite_args, assign_command, backup_file, camera_pose_f
                      overlay_file, read_pose, recorded_flange_pose, sim_relayout, teach_hint,
                      text_panel, use_hint, wall_stamp)
 from ..core.logger import atomic_write_text
+from ..core.transforms import pose_error
 from ..perception.classify_knn import KnnClassifier
 from ..perception.factory import classifier_backend, task_labels
 from ..perception.features import FEATURE_NAMES, feature_vector
@@ -78,13 +93,21 @@ GENERIC_SESSIONS = ('', 'capture', 'view', 'teach_classes', 'session', 'unknown'
 SIM_FIRST_SEED = 100       # first ground-truth scene (as sim/teach.train_knn_from_sim)
 SIM_RELAYOUT_SEED = 500    # sim 'c': layout of scenario seed --seed + this + k
 
+AUTO_MOVE_M = 0.03         # --auto: capture after the flange moved this far from the last view
+AUTO_MOVE_DEG = 8.0        # ... or turned this much
+AUTO_STILL_S = 0.6         # ... and has been still this long
+AUTO_STILL_M = 0.002       # still: flange moves less than this between two reads
+AUTO_STILL_DEG = 0.5
+
 LABEL_HELP = "'all <label>' or '<n> <label>[; <n> <label>]' (e.g. '0 apple; 1,2 banana')"
-PROMPT = "teach ['<n> <label>' | 'all <label>' | c u e w s h q]"
-SIM_PROMPT = "teach ['<n> <label>' | 'all <label>' | g c u e w s h q]"
-HEADLESS_HELP = ('type %s, or c new view, u undo, e evaluate, w write, s status, h help, '
-                 'q quit' % LABEL_HELP)
-WINDOW_HELP = ('keys in the window: c new view, u undo, e evaluate, w write, s status, h help, '
-               'q quit; Enter = type a labeling command (%s) in the terminal' % LABEL_HELP)
+PROMPT = "teach ['<n> <label>' | 'all <label>' | 'single <label>' | c y u e w s h q]"
+SIM_PROMPT = "teach ['<n> <label>' | 'all <label>' | 'single <label>' | g c y u e w s h q]"
+HEADLESS_HELP = ('type %s, or c new view, y accept the predictions, single <label> / single off '
+                 'one-object mode, u undo, e evaluate, w write, s status, h help, q quit'
+                 % LABEL_HELP)
+WINDOW_HELP = ('keys in the window: c new view, y accept the predictions, u undo, e evaluate, '
+               'w write, s status, h help, q quit; Enter = type a command in the terminal (%s, '
+               'single <label> / single off)' % LABEL_HELP)
 SIM_HELP = ('sim: g labels this view from the ground truth; c lets the simulated operator '
             'rearrange the objects')
 
@@ -92,15 +115,18 @@ COMMANDS = {'q': 'quit', 'quit': 'quit', 'exit': 'quit', 'c': 'capture', 'captur
             'u': 'undo', 'undo': 'undo', 'e': 'evaluate', 'eval': 'evaluate',
             'evaluate': 'evaluate', 'w': 'write', 'write': 'write', 'save': 'write',
             's': 'status', 'status': 'status', 'h': 'help', 'help': 'help', '?': 'help',
-            'g': 'ground_truth', 'gt': 'ground_truth'}
+            'g': 'ground_truth', 'gt': 'ground_truth', 'y': 'accept', 'yes': 'accept',
+            'ok': 'accept'}
 
 
 # ------------------------------------------------------------------ label commands
 def command_kind(text: Optional[str]) -> str:
-    """Return the command of an operator line: a COMMANDS value, 'label' or 'none' (empty)."""
+    """Return the kind of an operator line: a COMMANDS value, 'single', 'label' or 'none'."""
     s = str(text or '').strip()
     if not s:
         return 'none'
+    if s.split()[0].lower() == 'single':
+        return 'single'
     return COMMANDS.get(s.lower(), 'label')
 
 
@@ -672,9 +698,9 @@ def view_features(frame, dets: Sequence[Any]) -> Tuple[np.ndarray, List[bool]]:
     return X, [bool(v) for v in np.all(np.isfinite(X), axis=1)]
 
 
-def instance_rows(dets: Sequence[Any], usable: Sequence[bool],
-                  labeled: Dict[int, str]) -> List[List[str]]:
-    """Return INSTANCE_HEADERS rows for the valid instances of a view."""
+def instance_rows(dets: Sequence[Any], usable: Sequence[bool], labeled: Dict[int, str],
+                  pred: Optional[Dict[int, Tuple[str, float]]] = None) -> List[List[str]]:
+    """Return INSTANCE_HEADERS rows for the valid instances (pred: {n: (label, score)})."""
     rows = []
     for i, d in enumerate(dets):
         if d.length is not None and d.width is not None and d.height is not None:
@@ -684,6 +710,8 @@ def instance_rows(dets: Sequence[Any], usable: Sequence[bool],
         c = '-' if d.center_base is None else fmt_mm(np.asarray(d.center_base)[:2], 0)
         if i in labeled:
             lab = labeled[i]
+        elif pred and i in pred:
+            lab = '%s? (predicted, score %.2f)' % pred[i]
         else:
             lab = '-' if usable[i] else '(incomplete features: cannot be labeled)'
         rows.append([str(i), size, c, lab])
@@ -718,8 +746,9 @@ def layout_unchanged(prev: Sequence[Tuple[float, float, float]],
 
 
 def draw_instances(img: np.ndarray, dets: Sequence[Any], labeled: Dict[int, str],
-                   usable: Sequence[bool]) -> np.ndarray:
-    """Write '#i' and the label given in this view at each instance (in place); return img."""
+                   usable: Sequence[bool],
+                   pred: Optional[Dict[int, Tuple[str, float]]] = None) -> np.ndarray:
+    """Write '#i' and the label given (or predicted: 'label?') at each instance; return img."""
     import cv2
     for i, d in enumerate(dets):
         u, v = d.center_px
@@ -727,6 +756,8 @@ def draw_instances(img: np.ndarray, dets: Sequence[Any], labeled: Dict[int, str]
             continue
         if i in labeled:
             text, color = '#%d %s' % (i, labeled[i]), (0, 255, 0)
+        elif pred and i in pred:
+            text, color = '#%d %s?' % (i, pred[i][0]), (0, 165, 255)
         elif usable[i]:
             text, color = '#%d' % i, (0, 255, 255)
         else:
@@ -917,6 +948,13 @@ class _Teacher:
         self.layout: List[Tuple[float, float, float]] = []
         self.last_stamp: Optional[float] = None
         self.relayouts = 0
+        self.single: Optional[str] = None             # single-object mode label
+        self.auto = bool(getattr(args, 'auto', False)) and not ui.headless
+        self.pred: Dict[int, Tuple[str, float]] = {}  # this view: n -> (label, score)
+        self.checked = [0, 0]                         # predictions right, predictions labeled
+        self.view_pose: Optional[np.ndarray] = None   # flange pose of the last view
+        self._last_pose: Optional[np.ndarray] = None
+        self._still_since: Optional[float] = None
 
     def intro(self) -> None:
         """Print the instructions."""
@@ -934,6 +972,12 @@ class _Teacher:
                 teach_hint(ui, self.s.arm)
         if ui.headless:
             ui.say('preview image: %s' % ui.preview_path('teach_classes'))
+            if getattr(self.args, 'auto', False):
+                ui.say('--auto needs the window (without --headless): capture with c')
+        elif self.auto:
+            ui.say('auto capture: a view is taken whenever the arm has been still for %.1f s at '
+                   'least %.0f mm / %.0f deg away from the last view' % (
+                       AUTO_STILL_S, AUTO_MOVE_M * 1e3, AUTO_MOVE_DEG))
         self.help()
 
     def help(self) -> None:
@@ -950,6 +994,7 @@ class _Teacher:
         pose = read_pose(self.s.arm)
         if pose is None:
             return frame
+        self.view_pose = np.asarray(pose.T_base_flange, dtype=float)
         meta = dict(frame.meta or {})
         extra = dict(meta.get('extra') or {})
         extra['T_base_flange'] = np.asarray(pose.T_base_flange, dtype=float).tolist()
@@ -973,6 +1018,9 @@ class _Teacher:
         self.frame, self.dets = frame, dets
         self.X, self.usable = view_features(frame, dets)
         self.layout = layout_of(dets)
+        self.pred = {}
+        if not self.single:
+            self._predict()
         self.overlay = res.debug_image if res.debug_image is not None else frame.color.copy()
         rej = rejected_summary(res.detections)
         self.ui.say('view %d: %d valid instance%s%s' % (
@@ -986,21 +1034,118 @@ class _Teacher:
             self.ui.say('NOTE: the objects did not move since the last view; move / rotate them '
                         'for new samples (c), or label this view anyway')
         if dets:
-            self.ui.say(format_table(INSTANCE_HEADERS, instance_rows(dets, self.usable, {})))
+            self.ui.say(format_table(INSTANCE_HEADERS,
+                                     instance_rows(dets, self.usable, {}, self.pred)))
+            if self.pred:
+                self.ui.say('predicted (label?): fix wrong ones by number, then y accepts '
+                            'the rest')
         else:
             self.ui.say('no valid instance: put the objects inside the pick area, apart from '
                         'each other and away from the place zones, then c')
         self.show()
+        if self.single:
+            self._label_single()
         return True
+
+    def _predict(self) -> None:
+        """Classify the usable instances of this view with the samples so far (self.pred)."""
+        X, y = self.book.arrays()
+        k, md = knn_params(self.cfg)
+        idx = [i for i, u in enumerate(self.usable) if u]
+        if not idx or len(set(y)) < 2 or len(y) < k:
+            return
+        try:
+            labels, scores, _d = KnnClassifier(k=k, max_distance=md).fit(X, y).predict(
+                self.X[idx])
+        except ValueError as e:
+            _LOG.warning('prediction failed: %s', e)
+            return
+        self.pred = {i: (str(lab), float(sc)) for i, lab, sc in zip(idx, labels, scores)}
+
+    def _label_single(self) -> None:
+        """Single-object mode: label the only valid instance of this view."""
+        if len(self.dets) == 1 and self.usable[0]:
+            self._add('single %s' % self.single, {0: self.single}, 'single')
+        elif len(self.dets) > 1:
+            self.ui.say('single-object mode (%s): %d instances in this view, nothing labeled; '
+                        'keep one object in view, or label by number'
+                        % (self.single, len(self.dets)))
+        elif self.dets:
+            self.ui.say('single-object mode: the instance has incomplete features, not labeled')
+
+    def set_single(self, text: str) -> bool:
+        """'single <label>' turns single-object mode on, 'single off' turns it off."""
+        parts = str(text).split()
+        if len(parts) != 2:
+            self.ui.say("usage: 'single <label>' or 'single off'")
+            return False
+        if parts[1].lower() in ('off', 'none', '-'):
+            self.single = None
+            self.ui.say('single-object mode off: new views are predicted, y accepts')
+            return True
+        names = confirm_labels(self.ui, [parts[1]], self.known, self.task, self.accepted)
+        if names is None:
+            return False
+        self.single = names[parts[1]]
+        self.ui.say('single-object mode: keep one %s in view; every view with one valid instance '
+                    'is labeled %s (%s)' % (self.single, self.single,
+                                            'captured when the arm stops' if self.auto
+                                            else 'c captures'))
+        return True
+
+    def accept(self) -> bool:
+        """Label the unlabeled instances of this view with their predictions."""
+        if self.view == 0:
+            self.ui.say('no view yet: c captures one')
+            return False
+        done = self.book.labeled_in_view(self.view)
+        todo = {i: lab for i, (lab, _sc) in self.pred.items() if i not in done}
+        unknown = sorted(i for i, lab in todo.items() if lab == 'unknown')
+        if unknown:
+            self.ui.say('%s predicted unknown: label by number'
+                        % ', '.join('#%d' % i for i in unknown))
+        assign = {i: lab for i, lab in todo.items() if lab != 'unknown'}
+        if not assign:
+            self.ui.say('no prediction to accept in this view%s' % (
+                ' (single-object mode is on)' if self.single else ''))
+            return False
+        return self._add('y', assign, 'confirmed')
+
+    def auto_tick(self) -> None:
+        """--auto: capture when the arm has stopped at a pose far enough from the last view."""
+        pose = read_pose(self.s.arm) if self.s.arm is not None else None
+        if pose is None:
+            return
+        T = np.asarray(pose.T_base_flange, dtype=float)
+        now = self.s.clock.now()
+        prev, self._last_pose = self._last_pose, T
+        if prev is None:
+            return
+        dp, dr = pose_error(prev, T)
+        if dp > AUTO_STILL_M or math.degrees(dr) > AUTO_STILL_DEG:
+            self._still_since = None
+            return
+        if self._still_since is None:
+            self._still_since = now
+        if now - self._still_since < AUTO_STILL_S:
+            return
+        if self.view_pose is not None:
+            mp, mr = pose_error(self.view_pose, T)
+            if mp < AUTO_MOVE_M and math.degrees(mr) < AUTO_MOVE_DEG:
+                return
+        self._still_since = None
+        self.ui.say('auto: the arm stopped at a new pose')
+        self.new_view()
 
     def show(self) -> None:
         """Show (headless: save) the overlay with the numbered instances and their labels."""
         if self.frame is None or self.overlay is None:
             return
         labeled = self.book.labeled_in_view(self.view)
-        img = draw_instances(self.overlay.copy(), self.dets, labeled, self.usable)
-        lines = ['view %d: %d valid instances, %d labeled' % (self.view, len(self.dets),
-                                                              len(labeled)),
+        img = draw_instances(self.overlay.copy(), self.dets, labeled, self.usable, self.pred)
+        lines = ['view %d: %d valid instances, %d labeled%s' % (
+                     self.view, len(self.dets), len(labeled),
+                     ' | single-object mode: %s' % self.single if self.single else ''),
                  'samples: %s' % counts_text(self.book.counts(), self.known)]
         view = compose_view(self.frame, img)
         self.ui.show('teach_classes', text_panel(view, wrap_lines(lines, view.shape[1])))
@@ -1069,6 +1214,11 @@ class _Teacher:
         self.ui.say('labeled %s | samples: %s' % (
             ', '.join('#%d %s' % (i, assign[i]) for i in idx),
             counts_text(self.book.counts(), self.known)))
+        hits = [self.pred[i][0] == assign[i] for i in idx if i in self.pred]
+        if hits:
+            self.checked[0] += sum(hits)
+            self.checked[1] += len(hits)
+            self.ui.say(self.prediction_text())
         self.show()
         return True
 
@@ -1097,16 +1247,26 @@ class _Teacher:
         return save_model(self.ui, self.cfg, self.task, self.args.mode, self.book, self.out,
                           self.source, self.known, extra={'views': self.view})
 
+    def prediction_text(self) -> str:
+        """Return how many of the labeled predictions were right."""
+        right, n = self.checked
+        if not n:
+            return 'predictions: none labeled yet'
+        return 'predictions right so far: %d / %d (%.0f%%)' % (right, n, 100.0 * right / n)
+
     def status(self) -> None:
         """Print the samples per class and the instances of this view."""
         self.ui.say('samples: %s' % counts_text(self.book.counts(), self.known))
+        self.ui.say('mode: %s%s | %s' % (
+            'single-object %s' % self.single if self.single else 'predict + confirm (y)',
+            ', auto capture' if self.auto else '', self.prediction_text()))
         self.ui.say('sources: %s | %d labelings (u undoes the last) | %s' % (
             ', '.join('%s %d' % kv for kv in sorted(self.book.source_counts().items()))
             or 'none', len(self.book.batches),
             'unsaved changes' if self.book.dirty else 'nothing unsaved'))
         if self.view and self.dets:
             self.ui.say('view %d:\n%s' % (self.view, format_table(INSTANCE_HEADERS, instance_rows(
-                self.dets, self.usable, self.book.labeled_in_view(self.view)))))
+                self.dets, self.usable, self.book.labeled_in_view(self.view), self.pred))))
 
     def finish(self) -> None:
         """At quit: offer to write unsaved samples."""
@@ -1122,14 +1282,20 @@ class _Teacher:
         """Read and run operator commands until q (or the end of the input)."""
         actions = {'capture': self.new_view, 'undo': self.undo, 'evaluate': self.evaluate,
                    'write': self.write, 'status': self.status, 'help': self.help,
-                   'ground_truth': self.ground_truth}
+                   'ground_truth': self.ground_truth, 'accept': self.accept}
         prompt = SIM_PROMPT if self.sim else PROMPT
         try:
             while True:
                 cmd = next_command(self.ui, prompt)
                 kind = command_kind(cmd)
+                if kind == 'none' and self.auto:
+                    self.auto_tick()
+                    continue
                 if kind == 'quit':
                     break
+                if kind == 'single':
+                    self.set_single(cmd)
+                    continue
                 if kind == 'label' and not self.ui.headless and len(cmd.strip()) == 1:
                     self.ui.say('unknown key %r (h = help)' % cmd)
                 elif kind == 'label':
@@ -1173,6 +1339,8 @@ def run_live(args, cfg_world_info, ui, book: SampleBook, known: List[str], out: 
             ui.say('ERROR: invalid perception config: %s' % e)
             return 2
         t.intro()
+        if args.label:
+            t.set_single('single %s' % args.label)
         t.capture()
         t.loop()
     return 0
@@ -1298,6 +1466,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--from-dir', nargs='+', default=None, metavar='[LABEL=]DIR',
                    help='offline: learn from capture session directories (one class each) '
                         'and write the model; no hardware')
+    p.add_argument('--label', default=None, metavar='LABEL',
+                   help='start in single-object mode: a view with one valid instance is '
+                        'labeled LABEL by itself (switch with "single <label>")')
+    p.add_argument('--auto', action='store_true',
+                   help='window mode: capture a view whenever the arm (drag-teach) has stopped '
+                        'at a new pose')
     p.add_argument('--sim-scenes', type=int, default=12, metavar='N',
                    help='sim mode: first learn from N simulated ground-truth scenes (0 = none)')
     return p

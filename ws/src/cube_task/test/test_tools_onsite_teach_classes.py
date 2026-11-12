@@ -64,6 +64,8 @@ def test_command_kind():
     assert tc.command_kind('u') == 'undo' and tc.command_kind('e') == 'evaluate'
     assert tc.command_kind('w') == 'write' and tc.command_kind('gt') == 'ground_truth'
     assert tc.command_kind('0 apple') == 'label' and tc.command_kind('all apple') == 'label'
+    assert tc.command_kind('Single pear') == 'single' and tc.command_kind('single off') == 'single'
+    assert tc.command_kind('y') == 'accept' and tc.command_kind('OK') == 'accept'
 
 
 def test_parse_label_command_all_numbers_and_lists():
@@ -309,6 +311,70 @@ def test_instance_rows_rejected_summary_and_drawing():
     img = np.zeros((40, 200, 3), np.uint8)
     tc.draw_instances(img, [edge], {0: 'green_pepper'}, [True])
     assert img[:, 120:].any() and not img[:, -1].any()     # moved left, not clipped
+    pred = {0: ('pear', 0.4), 1: ('pear', 0.9)}
+    rows_ = tc.instance_rows([a, a], [True, True], {0: 'apple'}, pred)
+    assert rows_[0][3] == 'apple' and rows_[1][3] == 'pear? (predicted, score 0.90)'
+
+
+class _View:
+    """Teacher state of one view, without camera or arm (for the helpers that label it)."""
+
+    def __new__(cls, tmp_path, n_dets, single='pear'):
+        ui, _fn, out = make_ui(tmp_path)
+        t = tc._Teacher.__new__(tc._Teacher)
+        t.ui, t.book, t.known, t.task, t.accepted = ui, tc.SampleBook(), [], 'L2', set()
+        t.single, t.pred, t.checked, t.view, t.frame = single, {}, [0, 0], 1, None
+        t.source = 'live'
+        t.dets = [Detection(label='unknown', score=0.0) for _ in range(n_dets)]
+        t.usable, t.X = [True] * n_dets, rows(n_dets, 1.0)
+        t.out_text = out
+        return t
+
+
+def test_single_object_mode_labels_only_a_view_with_one_instance(tmp_path):
+    t = _View(tmp_path, 1)
+    t._label_single()
+    assert t.book.counts() == {'pear': 1} and t.book.batches[-1].source == 'single'
+    t = _View(tmp_path, 2)
+    t._label_single()
+    assert t.book.counts() == {} and '2 instances in this view' in t.out_text.getvalue()
+
+
+def test_accept_takes_the_predictions_and_counts_the_right_ones(tmp_path):
+    t = _View(tmp_path, 3, single=None)
+    t.pred = {0: ('pear', 0.9), 1: ('banana', 0.8), 2: ('unknown', 0.0)}
+    assert t.label('1 potato')                         # a wrong prediction, fixed by number
+    assert t.accept()
+    assert t.book.labeled_in_view(1) == {0: 'pear', 1: 'potato'}
+    assert t.checked == [1, 2] and '#2 predicted unknown' in t.out_text.getvalue()
+    assert not t.accept()                              # nothing left to accept
+
+
+def test_auto_capture_waits_for_a_still_arm_at_a_new_pose(tmp_path, monkeypatch):
+    clock = SimClock()
+    poses = []
+    monkeypatch.setattr(tc, 'read_pose', lambda arm: type('P', (), {
+        'T_base_flange': poses.pop(0)})())
+    t = _View(tmp_path, 0)
+    t.s = type('S', (), {'arm': object(), 'clock': clock})()
+    t.view_pose, t._last_pose, t._still_since = np.eye(4), None, None
+    shots = []
+    t.new_view = lambda: shots.append(clock.now()) or setattr(t, 'view_pose', t._last_pose)
+
+    def at(x):
+        T = np.eye(4)
+        T[0, 3] = x
+        return T
+    for x in [0.0, 0.01, 0.02, 0.05] + [0.05] * 6 + [0.051] * 3 + [0.05] * 8:
+        poses.append(at(x))
+        t.auto_tick()
+        clock.sleep(0.1)
+    assert len(shots) == 1                      # still for 0.6 s, 50 mm from the last view
+    for _ in range(10):                         # still at the view just taken: no new shot
+        poses.append(at(0.05))
+        t.auto_tick()
+        clock.sleep(0.1)
+    assert len(shots) == 1
 
 
 def test_wrap_lines_fits_the_panel_width():
@@ -434,3 +500,19 @@ def test_sim_session_writes_a_model_that_classifies_a_new_scene(tmp_path):
     pairs = [p for p in pairs if p[1] is not None]
     assert len(pairs) >= 5, pairs
     assert sum(a == b for a, b in pairs) >= 0.9 * len(pairs), pairs
+
+
+def test_sim_views_are_predicted_and_checked_against_the_ground_truth(tmp_path):
+    cmds = ['g', 's', 'c', 'y', 'single banana', 'c', 'single off', 'q']
+    ui, fn, out = make_ui(tmp_path, cmds, answers={'before quitting': 'n'})
+    rc = tc.main(['--mode', 'sim', '--task', 'L2', '--seed', '4', '--sim-scenes', '12',
+                  '--log-dir', str(tmp_path), '--headless'], ui=ui)
+    text = out.getvalue()
+    assert rc == 0, text
+    assert 'predicted (label?)' in text and 'predictions right so far' in text
+    m = [ln for ln in text.splitlines() if ln.startswith('predictions right so far')][0]
+    right, n = (int(v) for v in m.split(':')[1].split('(')[0].split('/'))
+    assert n >= 4 and right >= 0.8 * n, m
+    assert 'single-object mode: keep one banana' in text
+    assert 'single-object mode (banana):' in text                 # the sim scene has several
+    assert 'single-object mode off' in text
