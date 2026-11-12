@@ -45,6 +45,8 @@ def add_common_args(p: argparse.ArgumentParser, task_required: bool = False,
     p.add_argument('--seed', type=int, default=0, help='sim scenario seed')
     p.add_argument('--mount', choices=('eye_to_hand', 'eye_in_hand'), default='eye_to_hand',
                    help='sim camera mount')
+    p.add_argument('--layout', choices=('A', 'B', 'C'), default='A',
+                   help='sim table layout (C = measured 11/12 table)')
     p.add_argument('--difficulty', choices=('normal', 'hard'), default='normal',
                    help='sim scenario difficulty')
     p.add_argument('--extrinsics-error', type=float, nargs=2, default=(0.0, 0.0),
@@ -78,7 +80,8 @@ def load_cfg_for(args: argparse.Namespace, task: Optional[str] = None):
         from ..sim.scenarios import make_scenario, scenario_config_overlay
         base = load_config(use_overlays=bool(getattr(args, 'site', False)))
         world, info = make_scenario(_scenario_task(task), int(args.seed), mount=args.mount,
-                                    difficulty=args.difficulty)
+                                    difficulty=args.difficulty,
+                                    layout=getattr(args, 'layout', 'A'))
         data = deep_merge(base.data, scenario_config_overlay(
             info, extrinsics_error=tuple(args.extrinsics_error)))
         cfg = Config(data, base.root, base.sources + ['sim:%s:%d' % (task, args.seed)])
