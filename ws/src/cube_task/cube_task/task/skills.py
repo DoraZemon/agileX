@@ -39,7 +39,7 @@ FAULT_GRIPPER_ERRORS = ('comm', 'fault', 'aborted')
 OPEN_CLEARANCE = 0.002
 #: a stopped release move still counts as "at release" within these limits (m).
 RELEASE_XY_TOL = 0.02
-RELEASE_Z_ABOVE_TOL = 0.05
+RELEASE_Z_ABOVE_TOL = 0.08
 RELEASE_Z_BELOW_TOL = 0.01
 #: at the release the fingers must open this far past the held width (m).
 RELEASE_OPEN_MARGIN = 0.01

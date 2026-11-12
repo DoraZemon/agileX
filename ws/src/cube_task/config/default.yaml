@@ -213,6 +213,8 @@ grasp:
   approach_height: 0.08        # pre-grasp TCP height above the object top
   transit_clearance: 0.12      # transit height above the highest obstacle / table
   transit_z_min: 0.15          # absolute minimum transit TCP z
+  transit_object_clearance: 0.06   # held object bottom above other objects on the way (was 0.03: L2 elbowed fruit)
+  min_approach_clearance: 0.04     # fingertips above the object top at pre-grasp / retreat (was 0.02)
   lift_height: 0.10            # lift above the grasp height after closing
   grasp_depth_ratio: 0.6       # TCP goes this fraction of object height below the top
   max_grasp_depth: 0.040       # but at most this far below the top (fingers 0.05 m long)
