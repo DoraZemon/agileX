@@ -1,6 +1,8 @@
-# Site poses taught with teach_poses (20261112_130226), merged over config/default.yaml.
+# Site poses taught with teach_poses (20261112_145806), merged over config/default.yaml.
 # Units: m, rad. Re-run teach_poses to change them; previous versions are kept
 # next to this file as poses.bak_<time>.yaml.
+# observe_joints / observe_views computed for the hand-eye calibrated camera (sim layout S),
+# not taught: check them on the arm (dry run) and re-teach with o / v if needed.
 zones:
   zone_red:
     center:
@@ -48,16 +50,28 @@ perception:
 robot:
   poses:
     observe_joints:
-    - 0.3032
-    - 1.65633
-    - -1.66852
-    - 0.2536
-    - 0.87298
-    - -0.45406
+    - 0.0
+    - 0.15
+    - -0.5
+    - 0.0
+    - 1.1
+    - 0.375
     observe_views:
-    - - -0.03599
-      - 1.7583
-      - -1.66852
-      - 0.05109
-      - 0.68834
-      - -0.05932
+    - - -0.6
+      - 0.15
+      - -0.5
+      - 0.0
+      - 1.1
+      - 0.375
+    - - 0.0
+      - 0.15
+      - -0.5
+      - 0.0
+      - 1.1
+      - 0.375
+    - - 0.6
+      - 0.15
+      - -0.5
+      - 0.0
+      - 1.1
+      - 0.375
