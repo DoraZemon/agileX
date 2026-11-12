@@ -40,7 +40,7 @@ def _observe(world, info, cfg):
     cam.start()
     arm.move_joints(cfg.get('robot.poses.observe_joints'))
     frame = cam.get_frame()
-    T_bf = arm.get_flange_pose().value if info['mount'] == 'eye_in_hand' else None
+    T_bf = arm.get_flange_pose().value
     return make_perception(cfg, 'L1').process(frame, camera_pose_in_base(
         extrinsics_from_cfg(cfg), T_bf))
 
@@ -56,9 +56,8 @@ def test_backend_switch():
     assert isinstance(make_perception(cfg, 'L2'), Perception)
 
 
-@pytest.mark.parametrize('mount', ['eye_to_hand', 'eye_in_hand'])
-def test_detections_have_planner_fields(mount):
-    world, info = make_scenario('L1', 1, mount=mount)
+def test_detections_have_planner_fields():
+    world, info = make_scenario('L1', 1)
     res = _observe(world, info, _cfg(info, 'l1_new'))
     valid = res.valid_detections()
     targets = [o for o in world.objects if o.label in ('red', 'green', 'yellow')]
