@@ -323,6 +323,7 @@ bash scripts/mujoco_run.sh sim_bench --backend mujoco --tasks L1,L2 \
 ## 详细文档
 
 - [任务包说明](ws/src/cube_task/README.md)：模块结构、工具入口和输出目录。
+- [上机指南](ws/src/cube_task/docs/上机指南.md)：实机测试的逐步流程和命令，先 `source scripts/env.sh`。
 - [运控使用说明](ws/src/cube_task/docs/运控使用说明.md)：视觉目标抓取、MoveIt/RViz 拖动控制、实机上电顺序、现场参数。
 - [现场流程](ws/src/cube_task/docs/现场流程.md)：接线、自检、示教、标定核对、空跑与比赛操作。
 - [配置说明](ws/src/cube_task/docs/配置说明.md)：配置项、现场文件和外参格式。

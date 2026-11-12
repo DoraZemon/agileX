@@ -92,7 +92,16 @@ def make_detector(cfg: Any, task: Optional[str]) -> Optional[Detector2D]:
 
 
 def make_perception(cfg: Any, task: Optional[str]) -> Perception:
-    """Build Perception(cfg, make_classifier(cfg, task), make_detector(cfg, task))."""
+    """
+    Build Perception(cfg, make_classifier(cfg, task), make_detector(cfg, task)).
+
+    perception.backend: l1_new switches L1 to piper_vision's detector
+    (perception/l1_new.py); every other task and the default use Perception.
+    """
+    if task == 'L1' and str(cfg.get('perception.backend', 'pipeline')).lower() == 'l1_new':
+        from .l1_new import L1NewPerception
+        LOG.info('perception for L1: backend l1_new (piper_vision)')
+        return L1NewPerception(cfg)
     classifier = make_classifier(cfg, task)
     detector = make_detector(cfg, task)
     LOG.info('perception for %s: backend %s, classifier %s, detector %s', task,
