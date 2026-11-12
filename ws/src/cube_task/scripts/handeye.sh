@@ -3,6 +3,7 @@
 #
 # Usage: bash scripts/handeye.sh [--target block|aruco] [--aruco-size M] [--points N]
 #                                [--iface can0] [--resume PAIRS_JSON] [--verify-only]
+#                                [--headless]
 #   --target block   (default) one 50 mm L1 cube alone on the table; touch the CENTER OF
 #                    ITS TOP FACE with the fingertip center
 #   --target aruco   a printed ArUco marker (DICT_4X4_50) lying flat; touch its center;
@@ -10,6 +11,8 @@
 #   --points N       touch points (default 8; spread them over the whole pick area)
 #   --resume FILE    continue an interrupted session (pairs.json printed by the tool)
 #   --verify-only    skip the calibration, only run the hover check
+#   --headless       no preview window: type Enter / s / u / q in this terminal. With the
+#                    window, keys only work when the PREVIEW WINDOW has the focus (click it)
 #
 # The organizers give no calibration (Q&A Q8/Q9): calibrate on the shared arm in your
 # debug slot. Method (tools/calib_points.py, the arm is never moved by the tool):
@@ -30,6 +33,7 @@ ARUCO_SIZE=0.04
 POINTS=8
 RESUME=()
 CALIB=1
+UI=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --target) TARGET="$2"; shift ;;
@@ -38,8 +42,9 @@ while [ $# -gt 0 ]; do
         --iface) IFACE="$2"; shift ;;
         --resume) RESUME=(--resume "$2"); shift ;;
         --verify-only) CALIB=0 ;;
+        --headless) UI=(--headless) ;;
         --realsense) export CAM_DRIVER=realsense ;;
-        -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
     shift
@@ -79,7 +84,7 @@ if [ "$CALIB" = 1 ]; then
     say "3/4 calibration: $POINTS touch points on a $TARGET target (drag-teach mode)"
     ARGS=(--mode real --task L1 --mount eye_in_hand --target "$TARGET" --points "$POINTS")
     [ "$TARGET" = aruco ] && ARGS+=(--aruco-dict DICT_4X4_50 --aruco-size "$ARUCO_SIZE")
-    if ! "$PY" -m cube_task calib_points "${ARGS[@]}" "${RESUME[@]}" "${SETS[@]}"; then
+    if ! "$PY" -m cube_task calib_points "${ARGS[@]}" "${RESUME[@]}" "${UI[@]}" "${SETS[@]}"; then
         fail 'calibration not written (see above); --resume continues a session'
         exit 1
     fi
@@ -95,5 +100,5 @@ fi
 warn 'Leave drag-teach mode. The arm goes to the observe pose and hovers 3 cm above each cube.'
 if confirm 'Run the hover check now?'; then
     "$PY" -m cube_task calib_verify --mode real --task L1 --mount eye_in_hand --all \
-        --hover 0.03 --speed 20 "${SETS[@]}"
+        --hover 0.03 --speed 20 "${UI[@]}" "${SETS[@]}"
 fi
