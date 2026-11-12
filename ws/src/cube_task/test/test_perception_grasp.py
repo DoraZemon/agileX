@@ -124,7 +124,7 @@ def test_neighbors_do_not_change_non_block_grasps():
 
 
 def test_finger_hits_band():
-    gp = GraspPlanner(make_cfg(), 'L1')
+    gp = GraspPlanner(make_cfg(grasp__open_full_tasks=[]), 'L1')
     d = make_det('red', 0.0, 0.0)
     assert gp.finger_hits(d, 0.0, 0.0, 0.0, 0.03) == 0              # no neighbor key
     d.extra['_neighbor_xy'] = np.zeros((0, 2))
@@ -133,6 +133,19 @@ def test_finger_hits_band():
     d.extra['_neighbor_xy'] = np.array([[0.02, 0.0], [-0.039, 0.01], [0.045, 0.0],
                                         [0.02, FINGER_HALF_BAND + 0.001], [0.016, 0.0]])
     assert gp.finger_hits(d, 0.0, 0.0, 0.0, 0.03) == 2
+
+
+def test_l1_opens_fully_and_its_finger_band_reaches_that_far():
+    gp = GraspPlanner(make_cfg(), 'L1')
+    d = make_det('red', 0.0, 0.0)
+    assert gp.plan(d).open_width == pytest.approx(gp.max_width)
+    # Open to max_width (0.07 here) -> fingers reach 0.035 + FINGER_OUTER: 0.045 m is hit.
+    d.extra['_neighbor_xy'] = np.array([[0.045, 0.0]])
+    assert gp.finger_hits(d, 0.0, 0.0, 0.0, 0.03) == 1
+    assert GraspPlanner(make_cfg(grasp__open_full_tasks=[]), 'L1').finger_hits(
+        d, 0.0, 0.0, 0.0, 0.03) == 0
+    assert GraspPlanner(make_cfg(), 'L2').plan(make_det('apple', 0.0, 0.0)).open_width < \
+        gp.max_width
 
 
 def test_block_is_not_turned_onto_an_axis_too_wide_for_the_gripper():

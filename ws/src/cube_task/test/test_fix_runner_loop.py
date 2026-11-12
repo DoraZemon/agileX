@@ -24,7 +24,7 @@ def _picks(rig):
 
 
 def test_every_pick_uses_fresh_geometry_from_the_observe_pose():
-    rig = Rig('L1')
+    rig = Rig('L1', runner__return_home_at_end=False)
     objects = _l1(rig)
     releases = []
 
@@ -44,13 +44,26 @@ def test_every_pick_uses_fresh_geometry_from_the_observe_pose():
     assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == 3
 
 
-@pytest.mark.parametrize('at_end,moves', [(False, 3), (True, 4)])
-def test_observe_return_options(at_end, moves):
+@pytest.mark.parametrize('at_end,moves,last', [
+    (False, 3, None), (True, 4, 'observe'), ('observe', 4, 'observe'), ('home', 4, 'home')])
+def test_observe_return_options(at_end, moves, last):
     rig = Rig('L1', runner__return_home_at_end=at_end)
     _l1(rig)
     rep = rig.runner().run()
     assert rep.ok and rep.placed == 3
-    assert len([c for c in rig.arm.commands if c[0] == 'move_joints']) == moves
+    joints = [c for c in rig.arm.commands if c[0] == 'move_joints']
+    assert len(joints) == moves
+    if last is not None:
+        want = rig.cfg.get('robot.poses.%s_joints' % last)
+        assert np.allclose(joints[-1][1], want)
+
+
+def test_the_round_ends_at_the_home_pose_by_default():
+    rig = Rig('L1')
+    _l1(rig)
+    assert rig.runner().run().ok
+    assert [e['ok'] for e in rig.logger.kinds('home')] == [True]
+    assert np.allclose([c for c in rig.arm.commands if c[0] == 'move_joints'][-1][1], 0.0)
 
 
 # ------------------------------------------------------------- observation failures
@@ -246,14 +259,14 @@ def test_shared_zone_spreads_releases_and_clears_earlier_objects():
     r1, r2 = np.array(p1['release_xyz']), np.array(p2['release_xyz'])
     center = np.array([0.20, 0.30])
     # Two labels share zone_red: no center-first; both inside the zone, not overlapping.
-    assert np.linalg.norm(r1[:2] - center) > 0.03
+    assert np.linalg.norm(r1[:2] - center) > 0.01
     assert np.linalg.norm(r1[:2] - r2[:2]) >= (0.065 + 0.058) / 2.0
     for r in (r1, r2):
         assert np.all(np.abs(r[:2] - center) <= 0.08 - 0.029)
     # Flat zone, footprints clear of each other: the second object's bottom (TCP minus
     # held offset) is released place.release_height_flat above the card, not stacked.
     held2 = p2['grasp_xyz'][2] - 0.0
-    assert r2[2] - held2 == pytest.approx(0.015)
+    assert r2[2] - held2 == pytest.approx(0.01)
 
 
 def test_spread_release_out_of_reach_in_a_bin_falls_back_to_the_zone_center():

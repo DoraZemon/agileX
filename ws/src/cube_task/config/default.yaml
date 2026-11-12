@@ -214,17 +214,19 @@ grasp:
   transit_clearance: 0.12      # transit height above the highest obstacle / table
   transit_z_min: 0.15          # absolute minimum transit TCP z
   lift_height: 0.10            # lift above the grasp height after closing
-  grasp_depth_ratio: 0.5       # TCP goes this fraction of object height below the top
-  max_grasp_depth: 0.030       # but at most this far below the top (finger length)
+  grasp_depth_ratio: 0.6       # TCP goes this fraction of object height below the top
+  max_grasp_depth: 0.040       # but at most this far below the top (fingers 0.05 m long)
   min_grasp_depth: 0.008
   linear_descent: true         # move_l for the last approach / lift
   block_labels_square: true    # treat L1 blocks as 90-degree symmetric
   use_cap_center: true         # aim at the center of the topmost points (round objects)
   max_object_width: null       # null -> robot.gripper.max_width - 0.005
   verify_grasp: true
+  open_full_tasks: [L1]         # open to robot.gripper.max_width before these tasks' grasps
 
 place:
   release_height: 0.06         # object bottom above the zone floor when the gripper opens
+  release_height_flat: 0.010   # ... over a flat card: low, so round fruit does not roll off
   retreat_height: 0.10
   open_width: null             # null -> robot.gripper.max_width
   # Spread releases inside a zone: first free slot of a grid from zone.size minus the
@@ -280,8 +282,14 @@ runner:
   max_failures_per_label: null
   min_time_for_pick_s: 12.0    # do not start a new pick with less time left
   observe_retry_s: 0.5
+  # After a placement only the views with an object this close to the picked one are
+  # captured again before the next pick (the rest were not touched); -1 = every view
+  rescan_radius_m: 0.12
+  # An elongated class (place.nominal_footprint) seen shorter than this x its nominal
+  # length is cut by the image border or the gripper: not picked from that view
+  partial_length_ratio: 0.6
   start_on_enter: true         # wait for Enter before the timed run starts
-  return_home_at_end: false     # true: return to the observe pose after the round
+  return_home_at_end: home     # after the round: home (robot.poses.home_joints) | observe | false
   view_merge_dist_m: 0.04      # several observe views: one object if the centers are closer
   dry_run_hover: 0.05          # --dry-run: stay this high above grasp / release poses
 

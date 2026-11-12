@@ -26,6 +26,10 @@ from .kinematics import PiperKinematics, rot_log, tilt_outward
 
 LOG = logging.getLogger('cube_task.robot.safety')
 
+#: a linear move the controller cannot solve is done as a joint move up to this length (m):
+#: the lift / descend / release / retreat steps; their joint path stays close to the line.
+LINEAR_FALLBACK_M = 0.15
+
 _PATH_STEP_M = 0.02        # spacing of path samples for linear moves
 _PATH_MAX_SAMPLES = 40
 _JOINT_PATH_SAMPLES = 10   # samples along a joint-space (P2P / move_joints) path
@@ -516,7 +520,42 @@ class SafeArm(ArmInterface):
             ok, reason = self._check_joint_path(q_now, q_goal)
         if not ok:
             return _rejected(reason)
-        return self._arm.move_tcp(T, linear=linear, timeout=timeout)
+        res = self._arm.move_tcp(T, linear=linear, timeout=timeout)
+        if q_goal is not None and not res.ok and res.error == 'unreachable':
+            if not linear:
+                return self._p2p_by_joints(q_goal, res, timeout)
+            T_now = self._current_tcp(None)
+            if (T_now is not None and float(np.linalg.norm(T[:3, 3] - T_now[:3, 3]))
+                    <= LINEAR_FALLBACK_M):
+                return self._p2p_by_joints(q_goal, res, timeout)
+        return res
+
+    def _p2p_by_joints(self, q_goal: np.ndarray, res: MotionResult,
+                       timeout: Optional[float]) -> MotionResult:
+        """
+        After the controller found no solution for a target, move_j to our IK solution.
+
+        The controller solves move_p / move_l itself and refuses some poses that
+        q_goal (within the joint limits) reaches, e.g. the lift right after a
+        grasp (the skill then put the object back and grasped it again). Only
+        P2P moves and linear moves up to LINEAR_FALLBACK_M are replaced; the
+        joint path is checked again from where the arm is now. Returns the
+        original result when that fails.
+        """
+        gate = self._gate()
+        if gate is not None:
+            return res
+        q_now = self._current_joints()
+        if q_now is None:
+            return res
+        ok, reason = self._check_joint_path(q_now, q_goal)
+        if not ok:
+            LOG.warning('P2P target refused by the controller (%s); joint fallback refused: %s',
+                        res.detail, reason)
+            return res
+        LOG.warning('P2P target refused by the controller (%s); moving to the checked joint '
+                    'solution instead', res.detail)
+        return self._arm.move_joints(q_goal, timeout=timeout)
 
     def _current_tcp(self, q_now: Optional[np.ndarray]) -> Optional[np.ndarray]:
         st = self._arm.get_tcp_pose()

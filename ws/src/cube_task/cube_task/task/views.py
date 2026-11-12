@@ -12,7 +12,7 @@ view sees with room for an object around each point.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -79,20 +79,24 @@ def tag_view(dets: Iterable[Detection], view: int) -> List[Detection]:
 
 
 def merge_view_detections(scene: Dict[int, Sequence[Detection]], stale: Set[int] = frozenset(),
-                          dist: float = MERGE_DIST) -> List[Detection]:
+                          dist: float = MERGE_DIST,
+                          partial: Optional[Callable[[Detection], bool]] = None
+                          ) -> List[Detection]:
     """
     Return one detection per object over the views' latest detections.
 
     scene: view -> its valid detections (base frame). Detections of different
     views closer than dist (m, base XY, any label) are one object; the kept
-    one is from a view not in stale (captured after the last arm action) if
-    possible, then the one with more depth points (the more complete view).
-    Detections without a base position are dropped.
+    one is a whole view of it if possible (partial(d) False), then from a view
+    not in stale (captured after the last arm action), then the one with more
+    depth points (the more complete view). Detections without a base position
+    are dropped.
     """
     kept: List[Tuple[Tuple[float, float], Detection]] = []
 
-    def rank(d: Detection) -> Tuple[int, int]:
-        return (0 if view_of(d) in stale else 1, int(d.n_points))
+    def rank(d: Detection) -> Tuple[int, int, int]:
+        return (0 if partial is not None and partial(d) else 1,
+                0 if view_of(d) in stale else 1, int(d.n_points))
 
     for v in sorted(scene):
         for d in scene[v]:
@@ -109,6 +113,19 @@ def merge_view_detections(scene: Dict[int, Sequence[Detection]], stale: Set[int]
             elif rank(d) > rank(kept[hit][1]):
                 kept[hit] = (p, d)
     return [d for _p, d in kept]
+
+
+def views_near(scene: Dict[int, Sequence[Detection]], xy: Sequence[float],
+               dist: float) -> Set[int]:
+    """Return the views holding a detection within dist (m, base XY) of xy."""
+    out: Set[int] = set()
+    for v, dets in scene.items():
+        for d in dets:
+            p = _xy(d)
+            if p is not None and math.hypot(p[0] - float(xy[0]), p[1] - float(xy[1])) <= dist:
+                out.add(v)
+                break
+    return out
 
 
 def drop_near(scene: Dict[int, List[Detection]], xy: Sequence[float], dist: float) -> None:

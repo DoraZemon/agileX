@@ -1,0 +1,110 @@
+{
+  "model_file": "/home/zph/vision/ws/src/cube_task/models/knn_model.npz",
+  "created": "2026-11-12T20:16:59",
+  "source": "live",
+  "n_samples": 77,
+  "samples_per_class": {
+    "banana": 12,
+    "bell_pepper": 12,
+    "cucumber": 11,
+    "pear": 13,
+    "persimmon": 16,
+    "potato": 13
+  },
+  "accuracy": 0.9351,
+  "n_unknown": 0,
+  "per_class": {
+    "cucumber": {
+      "correct": 10,
+      "total": 11,
+      "accuracy": 0.9091
+    },
+    "potato": {
+      "correct": 11,
+      "total": 13,
+      "accuracy": 0.8462
+    },
+    "banana": {
+      "correct": 11,
+      "total": 12,
+      "accuracy": 0.9167
+    },
+    "pear": {
+      "correct": 12,
+      "total": 13,
+      "accuracy": 0.9231
+    },
+    "persimmon": {
+      "correct": 16,
+      "total": 16,
+      "accuracy": 1.0
+    },
+    "bell_pepper": {
+      "correct": 12,
+      "total": 12,
+      "accuracy": 1.0
+    }
+  },
+  "confusion": {
+    "cucumber": {
+      "cucumber": 10,
+      "pear": 1
+    },
+    "potato": {
+      "potato": 11,
+      "banana": 1,
+      "bell_pepper": 1
+    },
+    "banana": {
+      "banana": 11,
+      "potato": 1
+    },
+    "pear": {
+      "pear": 12,
+      "potato": 1
+    },
+    "persimmon": {
+      "persimmon": 16
+    },
+    "bell_pepper": {
+      "bell_pepper": 12
+    }
+  },
+  "confused_pairs": [],
+  "weak_classes": {},
+  "warnings": [],
+  "feature_names": [
+    "hue_00",
+    "hue_01",
+    "hue_02",
+    "hue_03",
+    "hue_04",
+    "hue_05",
+    "hue_06",
+    "hue_07",
+    "hue_08",
+    "hue_09",
+    "hue_10",
+    "hue_11",
+    "s_mean",
+    "s_std",
+    "v_mean",
+    "v_std",
+    "lab_a",
+    "lab_b",
+    "length",
+    "width",
+    "height",
+    "aspect",
+    "fill",
+    "circularity"
+  ],
+  "k": 3,
+  "max_distance": 3.0,
+  "mode": "real",
+  "task": "L2",
+  "sources": {
+    "single": 77
+  },
+  "views": 124
+}

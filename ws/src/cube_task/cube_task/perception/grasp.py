@@ -331,6 +331,9 @@ class GraspPlanner:
             raise ValueError('grasp.max_object_width must be in (0, max_width], got %r'
                              % self.max_object_width)
         self.open_margin = _float(cfg, 'robot.gripper.open_margin', 0.02)
+        # Open to max_width before every grasp of these tasks (a turned block fits).
+        self.open_full = self.task in [str(t) for t in
+                                       (cfg.get('grasp.open_full_tasks', None) or [])]
         self.close_width = _float(cfg, 'robot.gripper.close_width', 0.0)
         self.table_clearance = _required_float(cfg, 'robot.workspace.min_table_clearance')
         # The taught table height bounds the grasp floor from below (extrinsics z offset).
@@ -434,6 +437,8 @@ class GraspPlanner:
             z_grasp, expected, open_w, reason, more = self._profile_grasp(
                 det, prof, top, z_floor)
             info.update(more)
+        if self.open_full:
+            open_w = self.max_width
         if not reason and z_grasp >= top:
             reason = 'too_flat: top %.4f m is not above the lowest TCP z %.4f m' % (top, z_floor)
         info['z_rel'] = round(z_grasp - table_z, 4)
@@ -540,7 +545,8 @@ class GraspPlanner:
         nb = np.asarray(nb, dtype=np.float64).reshape(-1, 2)
         if nb.shape[0] == 0:
             return 0
-        open_w = min(self.max_width, expected + self.open_margin)
+        open_w = (self.max_width if self.open_full
+                  else min(self.max_width, expected + self.open_margin))
         ax = np.array([math.cos(closing), math.sin(closing)])
         rel = nb - np.array([x, y])
         along = np.abs(rel @ ax)
@@ -681,7 +687,8 @@ class PlacePlanner:
 
     With ``held`` (the held object's shape, see plan) the footprints are
     capsules: an object longer than LONG_ZONE_RATIO x the zone's smaller side
-    is turned so its long axis lies along a zone diagonal, other elongated
+    lies along a zone axis on the side nearer the robot (long_strip; both ends
+    stick out equally, the rules count a cucumber with 2/3 inside), other elongated
     objects keep the neutral wrist angle when they fit inside the zone, and
     the release xy is searched on a grid when no slot keeps the footprint and
     the open fingers clear of the objects already there. Over a flat zone a
@@ -741,11 +748,27 @@ class PlacePlanner:
         diag = math.atan2(float(zone.size[1]), float(zone.size[0]))
         diagonals = [zone.yaw + diag, zone.yaw - diag]
         if length > LONG_ZONE_RATIO * min(float(zone.size[0]), float(zone.size[1])):
-            neutral = neutral_closing_angle(x, y)
-            return sorted(diagonals, key=lambda a: abs(wrap_pi(
-                choose_closing_angle(a + math.pi / 2.0, x, y, math.pi) - neutral)))
+            return [strip_axis(zone)]
         return [neutral_closing_angle(x, y) - math.pi / 2.0, zone.yaw,
                 zone.yaw + math.pi / 2.0] + diagonals
+
+    def long_strip(self, zone: Zone, width: float) -> Tuple[float, float, float]:
+        """
+        Return (x, y, long-axis angle) of an object longer than the zone (long_strip).
+
+        The axis is the zone axis nearer the base-to-zone direction (the wrist keeps
+        its neutral angle); the object lies place.slot_margin inside the zone edge
+        on the side nearer the robot, so the other side is left to its zone-mates.
+        """
+        ax = strip_axis(zone)
+        cx, cy = float(zone.center[0]), float(zone.center[1])
+        k = 0 if abs(wrap_pi(2.0 * (ax - zone.yaw))) < 1e-9 else 1
+        across = float(zone.size[1 - k])
+        u = np.array([-math.sin(ax), math.cos(ax)])
+        off = max(0.0, across / 2.0 - float(width) / 2.0 - self.slot_margin)
+        if float(u @ np.array([cx, cy])) > 0.0:
+            off = -off
+        return cx + off * float(u[0]), cy + off * float(u[1]), ax
 
     def _clearance(self, cap, closing: float, finger_half: float, finger_floor: float,
                    occ: Sequence[Sequence[float]]) -> Tuple[float, float]:
@@ -766,7 +789,7 @@ class PlacePlanner:
         return clear, fingers
 
     def _reserved(self, zone: Zone, pending: Sequence[Sequence[float]]) -> list:
-        """Return capsules on both zone diagonals for the longest pending long object."""
+        """Return the long_strip capsule of the longest pending long object of the zone."""
         side = min(float(zone.size[0]), float(zone.size[1]))
         longs = [(max(float(a), float(b)), min(float(a), float(b))) for a, b in
                  (tuple(p)[:2] for p in pending if len(p) >= 2 and _finite(p[0]) and _finite(p[1]))
@@ -774,9 +797,8 @@ class PlacePlanner:
         if not longs:
             return []
         L, W = max(longs)
-        diag = math.atan2(float(zone.size[1]), float(zone.size[0]))
-        cx, cy = float(zone.center[0]), float(zone.center[1])
-        return [footprint_capsule(cx, cy, L, W, zone.yaw + sgn * diag) for sgn in (1.0, -1.0)]
+        x, y, ax = self.long_strip(zone, W)
+        return [footprint_capsule(x, y, L, W, ax)]
 
     def release_pose(self, zone: Zone, held: dict, occupied: Sequence[Sequence[float]] = (),
                      center_first: bool = True, pending: Sequence[Sequence[float]] = (),
@@ -856,6 +878,16 @@ class PlacePlanner:
                     'tier': tier, 'open_width': round(ow, 4)}
             return x, y, closing, info
 
+        if L > LONG_ZONE_RATIO * side and W > 0.0:
+            x, y, ax = self.long_strip(zone, W)
+            if center_only or skip(x, y):
+                x, y = center
+            cap = footprint_capsule(x, y, L, W, ax)
+            closing = choose_closing_angle(ax + math.pi / 2.0, x, y, math.pi)
+            fp, fg = self._clearance(cap, closing, open_w / 2.0 + FINGER_OUTER - FINGER_HALF_BAND,
+                                     finger_floor, occ)
+            return done(x, y, ax, closing, capsule_edge_margin(zone, cap), min(fp, fg),
+                        (fp, fg, open_w), 'long_strip')
         for x, y in ([] if center_only else legacy):
             if skip(x, y):
                 continue
@@ -960,6 +992,13 @@ class PlacePlanner:
                          T_release=top_down_T(x, y, z_rel, ang),
                          T_retreat=top_down_T(x, y, z_rel + self.retreat_height, ang),
                          open_width=open_w)
+
+
+def strip_axis(zone: Zone) -> float:
+    """Return the zone axis (zone.yaw or + pi/2) nearer the direction from the base to it."""
+    radial = math.atan2(float(zone.center[1]), float(zone.center[0]))
+    return min((float(zone.yaw), float(zone.yaw) + math.pi / 2.0),
+               key=lambda a: abs(wrap_pi(2.0 * (a - radial))))
 
 
 def zones_list(zones) -> list:

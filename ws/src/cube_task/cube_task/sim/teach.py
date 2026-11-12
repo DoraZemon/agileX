@@ -64,11 +64,12 @@ def collect_sim_samples(seeds: Iterable[int], mount: str = 'eye_in_hand', task: 
 def train_knn_from_sim(out: Path, mount: str = 'eye_in_hand', n_scenes: int = 40,
                        first_seed: int = 100, k: int = 3,
                        max_distance: float = 3.0,
-                       layout: str = 'C') -> Tuple[Path, Optional[float]]:
+                       layout: str = 'A') -> Tuple[Path, Optional[float]]:
     """
     Train and save a KNN model; return (path, leave-one-out accuracy).
 
-    The features do not depend on the table layout; 'C' lays out all L2 models.
+    The features do not depend on the table layout; 'A' has room for all six L2
+    models (the views of 'C', the 11/12 table, do not).
     """
     from ..perception.classify_knn import KnnClassifier
     X, y, names = collect_sim_samples(range(first_seed, first_seed + n_scenes), mount=mount,

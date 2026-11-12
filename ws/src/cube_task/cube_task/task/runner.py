@@ -30,15 +30,16 @@ import numpy as np
 from ..core.transforms import pose6_to_T
 from ..core.types import Detection, PerceptionResult, PickResult, TaskReport
 from ..core.zones import parse_zones
-from ..perception.grasp import (expected_table_z, GraspPlanner, LONG_ZONE_RATIO, PlacePlanner,
-                                detection_table_z, held_offset_of, max_gripper_width,
-                                table_floor_z, table_z_warning, transit_height)
+from ..perception.grasp import (CAPSULE_RATIO, expected_table_z, GraspPlanner, LONG_ZONE_RATIO,
+                                PlacePlanner, detection_table_z, held_offset_of,
+                                max_gripper_width, table_floor_z, table_z_warning,
+                                transit_height)
 from .operator import Operator
 from .selection import is_blacklisted, select_target
 from .selfcheck import observe_tcp_pose, self_check
 from .skills import PickPlaceSkill, is_fault_motion_error
 from .views import (drop_near, MERGE_DIST, merge_view_detections, nearest_view, observe_views,
-                    tag_view, view_of)
+                    tag_view, view_of, views_near)
 
 _LOG = logging.getLogger('cube_task.task.runner')
 
@@ -218,7 +219,11 @@ class TaskRunner:
         self.max_empty = int(cfg.get(r + 'max_empty_observations', 4))
         self.min_time = float(cfg.get(r + 'min_time_for_pick_s', 12.0))
         self.retry_s = float(cfg.get(r + 'observe_retry_s', 0.5))
-        self.return_home = bool(cfg.get(r + 'return_home_at_end', False))
+        rh = cfg.get(r + 'return_home_at_end', 'home')
+        self.return_home = 'observe' if rh is True else str(rh or '').lower()
+        if self.return_home not in ('', 'false', 'observe', 'home'):
+            raise ValueError('runner.return_home_at_end must be home, observe or false, got %r'
+                             % (rh,))
         self.match_dist = float(cfg.get('perception.tracking.match_dist_m', 0.03))
         self.n_avg = int(cfg.get('camera.frames_to_average', 3))
         self.settle_s = float(cfg.get('camera.settle_s', 0.4))
@@ -231,6 +236,12 @@ class TaskRunner:
         self.nominal = {str(k): (float(max(v)), float(min(v)))
                         for k, v in (cfg.get('place.nominal_footprint', {}) or {}).items()
                         if v is not None and len(v) == 2}
+        # An elongated object seen shorter than this x its nominal length is cut by the
+        # image border or the gripper: its center is not the object's (grasped at an end).
+        self.partial_ratio = float(cfg.get('runner.partial_length_ratio', 0.6))
+        # After a placement only the views with objects this close to the picked one are
+        # captured again (the others were not touched); negative = every view.
+        self.rescan_radius = float(cfg.get('runner.rescan_radius_m', 0.12))
         self.save_images = bool(cfg.get('logging.save_images', True)) and bool(
             cfg.get('logging.image_every_observation', True))
         tcp = cfg.get('robot.tcp_offset', None)
@@ -285,10 +296,12 @@ class TaskRunner:
                     # The round ended while the camera / perception kept failing.
                     self.fault_detail = 'observation failures: %s (%d in a row)' % (
                         self._last_obs_failure, self._fail_streak)
-                if rep.stop_reason not in ('fault', 'aborted') and self.return_home:
-                    m = self._go_observe()
+                if rep.stop_reason not in ('fault', 'aborted') and self.return_home in (
+                        'observe', 'home'):
+                    m = self._go_home() if self.return_home == 'home' else self._go_observe()
                     if not m[0]:
-                        _LOG.warning('could not return to the observe pose: %s', m[1])
+                        _LOG.warning('could not return to the %s pose: %s', self.return_home,
+                                     m[1])
         except Exception as e:  # noqa: B902 - a bug must stop the arm, not crash silently
             _LOG.exception('runner crashed')
             rep.stop_reason = 'fault'
@@ -528,6 +541,16 @@ class TaskRunner:
             return 'fault'
         return None
 
+    def _go_home(self) -> Tuple[bool, str]:
+        """Go straight up when low, then to robot.poses.home_joints (default zero); (ok, error)."""
+        q = self.cfg.get('robot.poses.home_joints', None) or [0.0] * 6
+        ok, err = self._lift_if_low()
+        if not ok:
+            return False, 'going up first: %s' % err
+        m = self.arm.move_joints([float(v) for v in q])
+        self._event('home', ok=m.ok, error=m.error, joints=[round(float(v), 4) for v in q])
+        return m.ok, m.detail or m.error
+
     def _go_observe(self, view: int = 0) -> Tuple[bool, str]:
         """Move to observe view `view` (taught joints, else observe_tcp); (ok, error)."""
         qj = self.views[view] if self.views else None
@@ -681,6 +704,8 @@ class TaskRunner:
                 why = 'not_a_target'
             elif not _has_xy(d):
                 why = 'no_geometry'
+            elif self._partial(d):
+                why = 'partial_view'
             else:
                 out.append(d)
                 continue
@@ -689,6 +714,13 @@ class TaskRunner:
         if skipped:
             self._event('decision', action='skip', skipped=skipped)
         return out
+
+    def _partial(self, det: Detection) -> bool:
+        """Return True for an elongated class seen much shorter than its nominal length."""
+        nom = self.nominal.get(det.label)
+        if nom is None or nom[0] < CAPSULE_RATIO * nom[1] or det.length is None:
+            return False
+        return float(det.length) < self.partial_ratio * nom[0]
 
     def _save_image(self, frame, result: Optional[PerceptionResult],
                     chosen: Optional[Detection]) -> None:
@@ -1020,9 +1052,9 @@ class TaskRunner:
         """
         Drop the other objects of flat zones that still wait for a long object.
 
-        A long object (cucumber on a 200 mm card) fits only along a zone diagonal
-        through the center, and its fingers then close along the other diagonal;
-        released first, it leaves the corners beside it for the rest. Zones that
+        A long object (cucumber on a 200 mm card) lies along a zone axis on the
+        side nearer the robot (PlacePlanner.long_strip); released first, it
+        leaves the other side to the rest. Zones that
         already hold a long object, and long objects blacklisted at their
         position, do not wait.
         """
@@ -1156,7 +1188,7 @@ class TaskRunner:
             if stop is not None:
                 rep.stop_reason = stop
                 return
-            merged = merge_view_detections(scene, stale, self.view_merge)
+            merged = merge_view_detections(scene, stale, self.view_merge, partial=self._partial)
             target = None
             if len(seen) == n:
                 target = self._select(self._candidates_from(merged), merged)
@@ -1188,8 +1220,16 @@ class TaskRunner:
                 rep.picks.append(res)
                 if res.ok:
                     rep.placed += 1
-                    drop_near(scene, _xy(target), self.view_merge)
-                stale = set(range(n))           # the arm went through the scene
+                    xy = _xy(target)
+                    if xy is not None:
+                        drop_near(scene, xy, self.view_merge)
+                    if xy is None or self.rescan_radius < 0:
+                        stale = set(range(n))
+                    else:
+                        # objects next to the picked one may have been touched
+                        stale |= views_near(scene, xy, self.rescan_radius)
+                else:
+                    stale = set(range(n))       # a failed pick may have moved things
             else:
                 stale.add(view_of(target))      # not picked: measure it again
             if stop is not None:

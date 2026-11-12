@@ -1,0 +1,403 @@
+{
+  "model_file": "/home/zph/vision/ws/src/cube_task/models/knn_model.npz",
+  "created": "2026-11-12T20:21:04",
+  "source": "review",
+  "n_samples": 73,
+  "samples_per_class": {
+    "banana": 12,
+    "bell_pepper": 13,
+    "cucumber": 10,
+    "pear": 11,
+    "persimmon": 15,
+    "potato": 12
+  },
+  "accuracy": 0.9726,
+  "n_unknown": 0,
+  "per_class": {
+    "cucumber": {
+      "correct": 10,
+      "total": 10,
+      "accuracy": 1.0
+    },
+    "potato": {
+      "correct": 11,
+      "total": 12,
+      "accuracy": 0.9167
+    },
+    "bell_pepper": {
+      "correct": 13,
+      "total": 13,
+      "accuracy": 1.0
+    },
+    "banana": {
+      "correct": 11,
+      "total": 12,
+      "accuracy": 0.9167
+    },
+    "pear": {
+      "correct": 11,
+      "total": 11,
+      "accuracy": 1.0
+    },
+    "persimmon": {
+      "correct": 15,
+      "total": 15,
+      "accuracy": 1.0
+    }
+  },
+  "confusion": {
+    "cucumber": {
+      "cucumber": 10
+    },
+    "potato": {
+      "potato": 11,
+      "banana": 1
+    },
+    "bell_pepper": {
+      "bell_pepper": 13
+    },
+    "banana": {
+      "banana": 11,
+      "potato": 1
+    },
+    "pear": {
+      "pear": 11
+    },
+    "persimmon": {
+      "persimmon": 15
+    }
+  },
+  "confused_pairs": [],
+  "weak_classes": {},
+  "warnings": [],
+  "feature_names": [
+    "hue_00",
+    "hue_01",
+    "hue_02",
+    "hue_03",
+    "hue_04",
+    "hue_05",
+    "hue_06",
+    "hue_07",
+    "hue_08",
+    "hue_09",
+    "hue_10",
+    "hue_11",
+    "s_mean",
+    "s_std",
+    "v_mean",
+    "v_std",
+    "lab_a",
+    "lab_b",
+    "length",
+    "width",
+    "height",
+    "aspect",
+    "fill",
+    "circularity"
+  ],
+  "k": 3,
+  "max_distance": 3.0,
+  "mode": "real",
+  "task": "L2",
+  "sources": {
+    "review": 73
+  },
+  "review_dirs": [
+    "/home/zph/vision_data/20261112_200717_teach_L2"
+  ],
+  "samples": [
+    {
+      "id": "2#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "3#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "4#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "5#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "6#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "7#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "8#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "9#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "12#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "13#0",
+      "label": "cucumber"
+    },
+    {
+      "id": "18#0",
+      "label": "potato"
+    },
+    {
+      "id": "19#0",
+      "label": "potato"
+    },
+    {
+      "id": "20#0",
+      "label": "potato"
+    },
+    {
+      "id": "22#0",
+      "label": "potato"
+    },
+    {
+      "id": "23#0",
+      "label": "potato"
+    },
+    {
+      "id": "25#0",
+      "label": "potato"
+    },
+    {
+      "id": "26#0",
+      "label": "potato"
+    },
+    {
+      "id": "27#0",
+      "label": "potato"
+    },
+    {
+      "id": "28#0",
+      "label": "potato"
+    },
+    {
+      "id": "29#0",
+      "label": "potato"
+    },
+    {
+      "id": "30#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "33#0",
+      "label": "potato"
+    },
+    {
+      "id": "34#0",
+      "label": "potato"
+    },
+    {
+      "id": "36#0",
+      "label": "banana"
+    },
+    {
+      "id": "37#0",
+      "label": "banana"
+    },
+    {
+      "id": "39#0",
+      "label": "banana"
+    },
+    {
+      "id": "40#0",
+      "label": "banana"
+    },
+    {
+      "id": "42#0",
+      "label": "banana"
+    },
+    {
+      "id": "43#0",
+      "label": "banana"
+    },
+    {
+      "id": "45#0",
+      "label": "banana"
+    },
+    {
+      "id": "49#0",
+      "label": "banana"
+    },
+    {
+      "id": "50#0",
+      "label": "banana"
+    },
+    {
+      "id": "51#0",
+      "label": "banana"
+    },
+    {
+      "id": "53#0",
+      "label": "banana"
+    },
+    {
+      "id": "54#0",
+      "label": "banana"
+    },
+    {
+      "id": "56#0",
+      "label": "pear"
+    },
+    {
+      "id": "57#0",
+      "label": "pear"
+    },
+    {
+      "id": "58#0",
+      "label": "pear"
+    },
+    {
+      "id": "62#0",
+      "label": "pear"
+    },
+    {
+      "id": "63#0",
+      "label": "pear"
+    },
+    {
+      "id": "64#0",
+      "label": "pear"
+    },
+    {
+      "id": "65#0",
+      "label": "pear"
+    },
+    {
+      "id": "66#0",
+      "label": "pear"
+    },
+    {
+      "id": "67#0",
+      "label": "pear"
+    },
+    {
+      "id": "70#0",
+      "label": "pear"
+    },
+    {
+      "id": "71#0",
+      "label": "pear"
+    },
+    {
+      "id": "73#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "74#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "75#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "83#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "84#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "85#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "86#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "87#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "89#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "90#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "91#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "93#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "95#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "96#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "97#0",
+      "label": "persimmon"
+    },
+    {
+      "id": "100#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "101#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "104#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "107#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "112#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "113#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "115#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "118#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "119#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "121#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "123#0",
+      "label": "bell_pepper"
+    },
+    {
+      "id": "124#0",
+      "label": "bell_pepper"
+    }
+  ]
+}

@@ -28,7 +28,7 @@ def _commands_after(arm, n):
 
 
 def test_l1_places_three_within_limit():
-    rig = Rig('L1')
+    rig = Rig('L1', runner__return_home_at_end=False)
     _l1(rig)
     rep = rig.runner().run()
     assert rep.stop_reason == 'done' and rep.ok, (rep.stop_reason, rig.logger.events[-1])
@@ -240,7 +240,7 @@ def test_observe_move_failure_is_a_fault():
 def test_eye_in_hand_uses_flange_pose_at_capture():
     from test_task_fakes import FakeExt
     from cube_task.core.transforms import top_down_T
-    rig = Rig('L1', camera__mount='eye_in_hand')
+    rig = Rig('L1', camera__mount='eye_in_hand', runner__return_home_at_end=False)
     _l1(rig)
     T_fc = np.eye(4)
     T_fc[:3, 3] = [0.05, 0.0, 0.03]

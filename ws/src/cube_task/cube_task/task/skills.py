@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from ..core.types import GraspPlan, MotionResult, PickResult, PlacePlan
-from ..perception.grasp import max_gripper_width
+from ..perception.grasp import RELEASE_OPEN_EXTRA, max_gripper_width
 
 _LOG = logging.getLogger('cube_task.task.skills')
 
@@ -342,11 +342,16 @@ class PickPlaceSkill:
 
     def _release_and_retreat(self, r: PickResult, g: GraspPlan, p: PlacePlan) -> None:
         held = r.grasp_width or 0.0
-        need = min(p.open_width - RELEASE_FULL_OPEN_TOL, held + RELEASE_OPEN_MARGIN)
+        width = p.open_width
+        if r.grasp_width is not None:
+            # The plan sized the opening from the detected width; an object that is
+            # wider between the fingers would stay held by it.
+            width = min(self.max_width, max(width, held + RELEASE_OPEN_EXTRA))
+        need = min(width - RELEASE_FULL_OPEN_TOL, held + RELEASE_OPEN_MARGIN)
         try:
             # A finger stopped by the bin or an earlier object is not a fault once
             # the fingers are open past the held width: the object is released.
-            self._open(r, 'open_release', p.open_width,
+            self._open(r, 'open_release', width,
                        need=need if self.verify else None,
                        short_ok=need if r.grasp_width is not None else None)
         except _StepFailed as e:
