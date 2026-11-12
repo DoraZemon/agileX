@@ -5,3 +5,10 @@
 perception:
   backend: l1_new              # L1 用 piper_vision 的识别；改成 pipeline 回到原方法
   l1_block_size: 0.050         # L1 方块边长 50 mm（规则 ±2 mm）
+
+robot:
+  workspace:                   # 11/12 实测桌面：卡纸中心 (0.60, 0, ±0.30)，要放宽工作区
+    x: [0.08, 0.75]
+    y: [-0.55, 0.55]
+    r_max: 0.75
+    max_tilt_from_down_deg: 180   # 取消抓取/放置的倾斜限制（只剩关节限位和桌面高度）
