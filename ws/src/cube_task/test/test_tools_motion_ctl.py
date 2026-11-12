@@ -64,6 +64,7 @@ def _bridge(arm, step=WAYPOINT_STEP):
     """Return a MoveItBridge without a ROS node (only the execute and cancel callbacks)."""
     b = MoveItBridge.__new__(MoveItBridge)
     b.arm, b.waypoint_step, b.busy = arm, step, threading.Lock()
+    b.max_waypoints = MAX_WAYPOINTS
     b._abort = threading.Event()
     arm.set_abort_event(b._abort)
     b._Action = SimpleNamespace(Result=_Result)
