@@ -307,8 +307,8 @@ def _at(clock, dt, fn):
 
 # ---------------------------------------------------------------- connect / enable
 def test_connect_creates_sdk_objects_in_order(rig):
-    arm = rig.make(enable=False)
-    assert rig.record == [{'robot': 'piper', 'firmeware_version': 'default',
+    arm = rig.make(enable=False, robot__firmware='v188')     # what S-V1.8-8 maps to
+    assert rig.record == [{'robot': 'piper', 'firmeware_version': 'v188',
                            'interface': 'socketcan', 'channel': 'can0'}]
     assert _names(rig.ctl)[:2] == ['init_effector', 'connect']
     assert arm.firmware_info['software_version'] == 'S-V1.8-8'
