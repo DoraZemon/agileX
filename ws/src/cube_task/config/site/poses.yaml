@@ -1,13 +1,15 @@
 # Site poses taught with teach_poses (20261112_145806), merged over config/default.yaml.
 # Units: m, rad. Re-run teach_poses to change them; previous versions are kept
 # next to this file as poses.bak_<time>.yaml.
-# observe_joints / observe_views computed for the hand-eye calibrated camera (sim layout S),
+# observe_joints / observe_views computed for the hand-eye calibrated camera (sim layout C),
 # not taught: check them on the arm (dry run) and re-teach with o / v if needed.
+# zones.*.center x / y: measured on the table (PR #2, 900 x 1200 mm, cards 0.60 m ahead,
+# +-0.30 m beside); floor z, size and yaw as taught.
 zones:
   zone_red:
     center:
-    - 0.5979
-    - 0.3105
+    - 0.6
+    - 0.3
     - -0.0034
     size:
     - 0.2
@@ -16,8 +18,8 @@ zones:
     wall_height: 0.0
   zone_yellow:
     center:
-    - 0.5837
-    - 0.0147
+    - 0.6
+    - 0.0
     - -0.0051
     size:
     - 0.2
@@ -26,8 +28,8 @@ zones:
     wall_height: 0.0
   zone_green:
     center:
-    - 0.5731
-    - -0.2824
+    - 0.6
+    - -0.3
     - -0.0075
     size:
     - 0.2
