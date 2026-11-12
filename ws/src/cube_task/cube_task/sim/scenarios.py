@@ -469,7 +469,7 @@ OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
     # Three views (joint1 turned) are scanned; an L1 object only has to be whole in one.
     'C': {'cards': {'zone_red': (0.60, 0.30), 'zone_yellow': (0.60, 0.0),
                     'zone_green': (0.60, -0.30)},
-          'pick': [[0.20, -0.22], [0.42, -0.22], [0.42, 0.22], [0.20, 0.22]],
+          'pick': [[0.18, -0.28], [0.44, -0.28], [0.44, 0.28], [0.18, 0.28]],
           'eye_in_hand': (0.0, 0.15, -0.5, 0.0, 1.1, 0.375),
           'views': ((-0.6, 0.15, -0.5, 0.0, 1.1, 0.375), (0.0, 0.15, -0.5, 0.0, 1.1, 0.375),
                     (0.6, 0.15, -0.5, 0.0, 1.1, 0.375)),
