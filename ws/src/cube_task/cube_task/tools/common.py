@@ -47,6 +47,9 @@ def add_common_args(p: argparse.ArgumentParser, task_required: bool = False,
                    help='camera mount: eye_in_hand (the only competition camera)')
     p.add_argument('--difficulty', choices=('normal', 'hard'), default='normal',
                    help='sim scenario difficulty')
+    p.add_argument('--layout', choices=('A', 'B', 'S'), default='A',
+                   help='sim table layout: A / B made up, S the 11/12 debug station (taught '
+                        'cards, calibrated wrist camera)')
     p.add_argument('--extrinsics-error', type=float, nargs=2, default=(0.0, 0.0),
                    metavar=('M', 'DEG'), help='sim: error of the extrinsics estimate')
     p.add_argument('--replay-dir', default='', help='replay mode: directory from capture')
@@ -78,7 +81,8 @@ def load_cfg_for(args: argparse.Namespace, task: Optional[str] = None):
         from ..sim.scenarios import make_scenario, scenario_config_overlay
         base = load_config(use_overlays=bool(getattr(args, 'site', False)))
         world, info = make_scenario(_scenario_task(task), int(args.seed), mount=args.mount,
-                                    difficulty=args.difficulty)
+                                    difficulty=args.difficulty,
+                                    layout=getattr(args, 'layout', 'A'))
         data = deep_merge(base.data, scenario_config_overlay(
             info, extrinsics_error=tuple(args.extrinsics_error)))
         cfg = Config(data, base.root, base.sources + ['sim:%s:%d' % (task, args.seed)])

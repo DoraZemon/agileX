@@ -51,7 +51,7 @@ TASKS = ('L1', 'L2')
 MOUNTS = ('eye_in_hand',)               # the competition has only the wrist camera
 DIFFICULTIES = ('normal', 'hard')
 MATERIALS = ('official', 'legacy')
-LAYOUTS = ('A', 'B')
+LAYOUTS = ('A', 'B', 'S')
 
 # Orbbec-like wide-FOV color camera.
 DEFAULT_INTRINSICS = dict(fx=380.0, fy=380.0, cx=319.5, cy=239.5, width=640, height=480)
@@ -232,7 +232,7 @@ def _views() -> Tuple[Tuple[np.ndarray, int], ...]:
 
 
 def fully_visible(obj: SimObject, views: Optional[Sequence[Tuple[np.ndarray, int]]] = None,
-                  exact: bool = False) -> bool:
+                  exact: bool = False, intrinsics: Optional[Dict[str, Any]] = None) -> bool:
     """
     Check that the object lies inside every given observe image (wrist camera views).
 
@@ -240,9 +240,9 @@ def fully_visible(obj: SimObject, views: Optional[Sequence[Tuple[np.ndarray, int
     exact False: the corners of the base AABB must project inside; True:
     the corners of every part's AABB ('compound'; other shapes: every surface
     sample), so a long object lying diagonally is not penalized for its
-    empty AABB corners.
+    empty AABB corners. intrinsics: DEFAULT_INTRINSICS keys (default those).
     """
-    d = DEFAULT_INTRINSICS
+    d = DEFAULT_INTRINSICS if intrinsics is None else intrinsics
     if exact and obj.shape == 'compound':
         pts = np.array([[x, y, z] for lo, hi in obj.part_aabbs() for x in (lo[0], hi[0])
                         for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
@@ -461,7 +461,46 @@ OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
           'pick': [[0.16, -0.18], [0.305, -0.23], [0.305, 0.23], [0.16, 0.18]],
           'eye_in_hand': (0.0, 0.486, -0.495, 0.0, 1.168, 0.0),
           'wrist_yaws': (-0.45, 0.0, 0.45), 'wrist_lift': 0.1},
+    # S: the debug station of 11/12 (cards taught with teach_poses, far from the base:
+    # red and green centers are out of reach, releases go to their near part). The
+    # wrist camera is the hand-eye calibrated one with the camera_info intrinsics;
+    # the gripper hides the image rows below 320. No pick area is marked on the
+    # table: objects lie between the base and the cards and the three views (joint1
+    # turned) are scanned; an L1 object only has to be whole in one of them.
+    'S': {'cards': {'zone_green': (0.5731, -0.2824), 'zone_yellow': (0.5837, 0.0147),
+                    'zone_red': (0.5979, 0.3105)},
+          'pick': [[0.20, -0.22], [0.42, -0.22], [0.42, 0.22], [0.20, 0.22]],
+          'eye_in_hand': (0.0, 0.15, -0.5, 0.0, 1.1, 0.375),
+          'views': ((-0.6, 0.15, -0.5, 0.0, 1.1, 0.375), (0.0, 0.15, -0.5, 0.0, 1.1, 0.375),
+                    (0.6, 0.15, -0.5, 0.0, 1.1, 0.375)),
+          'l1_any_view': True,
+          'T_flange_camera': ((0.01685, 0.952586, 0.303803, -0.074811),
+                              (-0.999745, 0.011473, 0.019475, -0.010645),
+                              (0.015066, -0.304053, 0.952536, 0.039922),
+                              (0.0, 0.0, 0.0, 1.0)),
+          'intrinsics': dict(fx=488.6, fy=488.6, cx=319.8, cy=209.9, width=640, height=480),
+          'bottom_px': 160},
 }
+
+
+def layout_T_flange_camera(layout: str = 'A') -> np.ndarray:
+    """Return the wrist camera pose in the flange frame of a table layout."""
+    T = OFFICIAL_LAYOUTS[layout].get('T_flange_camera')
+    if T is None:
+        return eye_in_hand_T_flange_camera()
+    R, _ = np.linalg.qr(np.array(T, dtype=float)[:3, :3])
+    R *= np.sign(np.diag(R))
+    return make_T(R, np.array(T, dtype=float)[:3, 3])
+
+
+def layout_intrinsics(layout: str = 'A') -> Dict[str, Any]:
+    """Return the color intrinsics (DEFAULT_INTRINSICS keys) of a table layout."""
+    return dict(OFFICIAL_LAYOUTS[layout].get('intrinsics') or DEFAULT_INTRINSICS)
+
+
+def layout_bottom_px(layout: str = 'A') -> int:
+    """Return the bottom image rows of a layout's wrist view that show the gripper."""
+    return int(OFFICIAL_LAYOUTS[layout].get('bottom_px', EYE_IN_HAND_BOTTOM_PX))
 
 
 # ------------------------------------------------------------------ sampling
@@ -795,7 +834,7 @@ def official_observe(layout: str = 'A'
     q = tuple(float(v) for v in OFFICIAL_LAYOUTS[layout]['eye_in_hand'])
     if not within_limits(q, 0.02):
         raise RuntimeError('layout %s: eye-in-hand observe joints outside the limits' % layout)
-    T = piper_fk(q) @ eye_in_hand_T_flange_camera()
+    T = piper_fk(q) @ layout_T_flange_camera(layout)
     return q, tuple(tuple(float(v) for v in row) for row in T)
 
 
@@ -805,19 +844,26 @@ def official_wrist_views(layout: str = 'A'
     """
     Return ((observe joints, T_base_camera), ...) of the wrist observe views of a layout.
 
-    The eye_in_hand joints with joint1 turned by each of the layout's wrist_yaws and
-    joint2 raised by wrist_lift, in scan order (robot.poses.observe_views).
+    The layout's explicit views, else the eye_in_hand joints with joint1 turned by
+    each of the layout's wrist_yaws and joint2 raised by wrist_lift, in scan order
+    (robot.poses.observe_views).
     """
     lay = OFFICIAL_LAYOUTS[layout]
     out = []
-    for yaw in lay.get('wrist_yaws', (0.0,)):
-        q = list(float(v) for v in lay['eye_in_hand'])
-        q[0] += float(yaw)
-        if yaw:
-            q[1] += float(lay.get('wrist_lift', 0.0))
+    if lay.get('views'):
+        joints = [list(float(v) for v in q) for q in lay['views']]
+    else:
+        joints = []
+        for yaw in lay.get('wrist_yaws', (0.0,)):
+            q = list(float(v) for v in lay['eye_in_hand'])
+            q[0] += float(yaw)
+            if yaw:
+                q[1] += float(lay.get('wrist_lift', 0.0))
+            joints.append(q)
+    for q in joints:
         if not within_limits(tuple(q), 0.02):
             raise RuntimeError('layout %s: wrist view %s outside the joint limits' % (layout, q))
-        T = piper_fk(tuple(q)) @ eye_in_hand_T_flange_camera()
+        T = piper_fk(tuple(q)) @ layout_T_flange_camera(layout)
         out.append((tuple(q), tuple(tuple(float(v) for v in row) for row in T)))
     return tuple(out)
 
@@ -830,21 +876,23 @@ def official_visible(obj: SimObject, layout: str = 'A', any_wrist_view: bool = T
     the wrist observe views; False (L1: objects inside the camera view): in the
     main wrist observe view (official_observe).
     """
-    h = DEFAULT_INTRINSICS['height']
+    intr = layout_intrinsics(layout)
+    h = intr['height']
 
     def seen(views) -> bool:
-        return fully_visible(obj, views) or fully_visible(obj, views, exact=True)
+        return (fully_visible(obj, views, intrinsics=intr)
+                or fully_visible(obj, views, exact=True, intrinsics=intr))
 
     wrist = ([T for _q, T in official_wrist_views(layout)] if any_wrist_view
              else [official_observe(layout)[1]])
-    return any(seen(((inv_T(np.array(T)), h - EYE_IN_HAND_BOTTOM_PX),)) for T in wrist)
+    return any(seen(((inv_T(np.array(T)), h - layout_bottom_px(layout)),)) for T in wrist)
 
 
 @functools.lru_cache(maxsize=4)
 def official_views(layout: str = 'A') -> Tuple[Tuple[np.ndarray, int], ...]:
     """Return ((T_camera_base, max image row),) of the main wrist observe view of a layout."""
     eih = np.array(official_observe(layout)[1])
-    return ((inv_T(eih), DEFAULT_INTRINSICS['height'] - EYE_IN_HAND_BOTTOM_PX),)
+    return ((inv_T(eih), layout_intrinsics(layout)['height'] - layout_bottom_px(layout)),)
 
 
 def _image_margin(pts: np.ndarray, T_cb: np.ndarray, v_max: float) -> float:
@@ -1106,7 +1154,8 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
     hard = difficulty == 'hard'
 
     def visible(obj: SimObject) -> bool:
-        return official_visible(obj, layout, any_wrist_view=task == 'L2')
+        return official_visible(obj, layout,
+                                any_wrist_view=task == 'L2' or bool(lay.get('l1_any_view')))
 
     zones = official_zones(layout)
     info: Dict[str, Any] = {'task': task, 'seed': int(seed), 'mount': mount,
@@ -1136,14 +1185,15 @@ def _official_scenario(task: str, seed: int, mount: str, difficulty: str, layout
     info.update(labels=labels, class_to_zone=class_to_zone, categories=categories,
                 zones={z.name: z.to_zone() for z in zones},
                 pick_polygon=[[float(v) for v in p] for p in lay['pick']],
-                intrinsics=default_intrinsics(),
+                intrinsics=CameraIntrinsics(**{k: layout_intrinsics(layout)[k] for k in
+                                               ('fx', 'fy', 'cx', 'cy', 'width', 'height')}),
                 objects=[{'name': o.name, 'label': o.label} for o in objects],
                 required=sum(1 for o in objects if o.label in class_to_zone),
                 ungraspable={k: v for k, v in sorted(why.items()) if v})
     info['graspable_required'] = sum(1 for o in objects
                                      if o.label in class_to_zone and not why[o.label])
     q, T_obs = official_observe(layout)
-    info['T_flange_camera'] = eye_in_hand_T_flange_camera()
+    info['T_flange_camera'] = layout_T_flange_camera(layout)
     info['T_base_camera_observe'] = np.array(T_obs)
     info['observe_joints'] = list(q)
     info['observe_views'] = [list(v) for v, _T in official_wrist_views(layout)]
