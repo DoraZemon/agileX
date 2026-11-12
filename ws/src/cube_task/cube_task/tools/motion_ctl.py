@@ -6,6 +6,7 @@ Motion-control entry point: drive the arm without the timed competition loop.
     python3 -m cube_task motion_ctl vision --label red          # camera -> detection -> pick
     python3 -m cube_task motion_ctl gripper --width 0.08
     python3 -m cube_task motion_ctl joints --joint 1 --delta 0.05   # small joint jog
+    python3 -m cube_task motion_ctl home [--observe]            # back to the home pose
     python3 -m cube_task motion_ctl moveit [--execute]          # RViz / MoveIt bridge
 
 Mode 1, vision target input: ``pick`` takes a base-frame target typed by hand, ``vision``
@@ -24,7 +25,7 @@ import logging
 import math
 import sys
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -56,7 +57,7 @@ def _common_parent() -> argparse.ArgumentParser:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Return the argument parser with the six sub-commands."""
+    """Return the argument parser with the sub-commands."""
     parent = _common_parent()
     p = argparse.ArgumentParser(prog='cube_task motion_ctl', description=__doc__.split('\n\n')[0])
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -107,6 +108,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help='refuse any joint moving more than this (default %.2f)' % MAX_JOG_RAD)
     jt.add_argument('--dry-run', action='store_true',
                     help='read the arm, check the joint limits, never move')
+    hm = sub.add_parser('home', parents=[parent],
+                        help='reset: straight up when low, then one joint move to '
+                             'robot.poses.home_joints (or the observe pose)')
+    hm.add_argument('--observe', action='store_true',
+                    help='go to the observe pose (first observe view) instead of home_joints')
+    hm.add_argument('--gripper', choices=('keep', 'open', 'close'), default='keep',
+                    help='gripper after arriving (default keep; open drops a held object)')
+    hm.add_argument('--dry-run', action='store_true',
+                    help='read the arm, print the target and check the limits, never move')
     return p
 
 
@@ -131,7 +141,7 @@ def _open(args):
         return EXIT_REFUSED
     try:
         s = open_session(args, args.task, arm=True, camera=need_cam, perception=need_cam,
-                         logger=True, operator=args.cmd in ('pick', 'vision'),
+                         logger=True, operator=args.cmd in ('pick', 'vision', 'home'),
                          connect=False, cfg_world_info=(cfg, world, info))
     except (ArmError, CameraError) as e:
         _say('FAULT: %s' % e)
@@ -423,6 +433,86 @@ def cmd_joints(args, s, opts) -> int:
     return EXIT_OK if res.ok else EXIT_FAULT
 
 
+def home_target(cfg, observe: bool = False) -> Tuple[np.ndarray, str]:
+    """Return (joint target, name) of the reset: robot.poses.home_joints or the observe pose."""
+    if observe:
+        from ..task.views import observe_views
+        try:
+            views = observe_views(cfg)
+        except ValueError as e:
+            raise Refused(str(e))
+        if not views:
+            raise Refused('no observe pose taught: teach it with teach_poses (o)')
+        return np.asarray(views[0], dtype=float), 'observe pose'
+    q = cfg.get('robot.poses.home_joints', None)
+    try:
+        vals = [float(v) for v in (q if q is not None else [0.0] * 6)]
+    except (TypeError, ValueError):
+        raise Refused('robot.poses.home_joints must be 6 joint angles (rad), got %r' % (q,))
+    if len(vals) != 6 or not all(math.isfinite(v) for v in vals):
+        raise Refused('robot.poses.home_joints must be 6 finite joint angles (rad), got %r'
+                      % (q,))
+    return np.asarray(vals, dtype=float), 'home pose'
+
+
+def cmd_home(args, s, opts) -> int:
+    """Reset: go straight up when the TCP is low, then one joint move to the home pose."""
+    try:
+        q_goal, what = home_target(s.cfg, args.observe)
+    except Refused as e:
+        _say('REFUSED: %s' % e)
+        return EXIT_REFUSED
+    code = _connect(s)
+    if code is not None:
+        return code
+    jq = s.arm.get_joints()
+    if jq is None or jq.value is None:
+        _say('FAULT: cannot read the joint angles')
+        return EXIT_FAULT
+    q_now = np.asarray(jq.value, dtype=float).reshape(-1)
+    kin = getattr(s.arm, '_kin', None)
+    bad = kin.limit_violations(q_goal) if kin is not None else []
+    if bad:
+        _say('REFUSED: the %s is outside the joint limits: %s' % (what, ', '.join(bad)))
+        return EXIT_REFUSED
+    step = float(np.max(np.abs(q_goal - q_now)))
+    _say('joints now    (rad): %s' % np.round(q_now, 4).tolist())
+    _say('%-13s (rad): %s' % (what, np.round(q_goal, 4).tolist()))
+    _say('largest joint change %.1f deg; low TCP goes straight up first' % math.degrees(step))
+    if args.dry_run:
+        _say('dry run: the %s is within the joint limits; nothing moved.' % what)
+        return EXIT_OK
+    if args.mode == 'real' and not _arm_selfcheck(args, s):
+        return EXIT_REFUSED
+    if not _confirm(args, s, 'move to the %s (largest joint change %.0f deg)'
+                    % (what, math.degrees(step))):
+        _say('Not started (no confirmation). Nothing moved.')
+        return EXIT_REFUSED
+    code = _enable(s, opts)
+    if code is not None:
+        return code
+    if s.operator is not None and hasattr(s.operator, 'start'):
+        s.operator.start()
+    runner = _make_runner(args, s)
+    ok_up, err = runner._lift_if_low()
+    if not ok_up:
+        _say('FAULT: cannot go straight up first: %s' % err)
+        return EXIT_FAULT
+    res = s.arm.move_joints(q_goal)
+    after = s.arm.get_joints()
+    _say('move to the %s: ok=%s error=%s %s' % (what, res.ok, res.error, res.detail or ''))
+    if after is not None and after.value is not None:
+        _say('joints after (rad): %s' % np.round(np.asarray(after.value), 4).tolist())
+    if not res.ok:
+        return EXIT_FAULT
+    if args.gripper != 'keep':
+        from ..perception.grasp import max_gripper_width
+        width = max_gripper_width(s.cfg) if args.gripper == 'open' else 0.0
+        g = s.arm.gripper(width, wait=True)
+        _say('gripper %s: ok=%s error=%s' % (args.gripper, g.ok, g.error))
+    return EXIT_OK
+
+
 def cmd_moveit(args, s, opts) -> int:
     """Run the MoveIt bridge until Ctrl-C (see robot/moveit_bridge.py)."""
     try:
@@ -461,7 +551,7 @@ def cmd_moveit(args, s, opts) -> int:
 
 
 _CMDS = {'status': cmd_status, 'pick': cmd_pick, 'vision': cmd_vision, 'gripper': cmd_gripper,
-         'joints': cmd_joints, 'moveit': cmd_moveit}
+         'joints': cmd_joints, 'home': cmd_home, 'moveit': cmd_moveit}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
