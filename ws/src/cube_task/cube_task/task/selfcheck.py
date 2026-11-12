@@ -118,9 +118,39 @@ def _in_workspace(cfg, x: float, y: float, z: Optional[float] = None) -> Optiona
     return None
 
 
-def _place_poses(cfg, zones) -> dict:
-    """Zone name -> (T_pre, T_release) for a typical held object, or an error string."""
+def _zone_footprints(cfg, task: Optional[str]) -> dict:
+    """
+    Zone name -> (length, width) (m) of the largest object the task sends there.
+
+    From tasks.<task>.class_to_zone and place.nominal_footprint; a zone that
+    receives a label without a nominal footprint maps to None (center only).
+    """
+    if task is None:
+        return {}
+    c2z = cfg.get('tasks.%s.class_to_zone' % task, None) or {}
+    nominal = cfg.get('place.nominal_footprint', {}) or {}
+    out: dict = {}
+    if not isinstance(c2z, dict):
+        return out
+    for label, zone in c2z.items():
+        fp = _numbers(nominal.get(label) or [], 2)
+        prev = out.get(str(zone), ())
+        if fp is None or prev is None:
+            out[str(zone)] = None
+        elif prev == () or max(fp) > max(prev):
+            out[str(zone)] = (max(fp), min(fp))
+    return out
+
+
+def _place_poses(cfg, zones, task: Optional[str] = None) -> dict:
+    """
+    Zone name -> [(T_pre, T_release), ...] for a typical held object, or an error string.
+
+    The zone center first, then (with the task's footprint for the zone) the
+    release positions task/runner tries after an unreachable one.
+    """
     from ..perception.grasp import PlacePlanner, transit_height
+    from .runner import RELEASE_RETRIES
     table_z = cfg.get('perception.table.expected_z', None)
     table_z = 0.0 if table_z is None else float(table_z)
     out = {}
@@ -129,10 +159,41 @@ def _place_poses(cfg, zones) -> dict:
         tz = transit_height(cfg, list(zones.values()), table_z, CHECK_HELD_OFFSET)
     except ValueError as e:
         return {name: str(e) for name in zones}
+    footprints = _zone_footprints(cfg, task)
     for name, zone in zones.items():
         p = planner.plan(zone, CHECK_HELD_OFFSET, tz)
-        out[name] = (p.T_pre, p.T_release) if p.feasible else p.reason
+        if not p.feasible:
+            out[name] = p.reason
+            continue
+        cands = [(p.T_pre, p.T_release)]
+        fp = footprints.get(name)
+        if fp is not None:
+            held = {'length': fp[0], 'width': fp[1], 'grip_width': fp[1]}
+            avoid: List[Tuple[float, float]] = []
+            while len(avoid) < RELEASE_RETRIES:
+                avoid.append((float(cands[-1][1][0, 3]), float(cands[-1][1][1, 3])))
+                q = planner.plan(zone, CHECK_HELD_OFFSET, tz, footprint=fp[0], held=held,
+                                 avoid=avoid)
+                if not q.feasible or any(
+                        math.hypot(float(q.T_release[0, 3]) - a, float(q.T_release[1, 3]) - b)
+                        < 1e-6 for a, b in avoid):
+                    break
+                cands.append((q.T_pre, q.T_release))
+        out[name] = cands
     return out
+
+
+def _pose_outside(cfg, T_pre, T_release) -> Optional[str]:
+    """Return why the transit or release TCP pose is outside robot.workspace, or None."""
+    for what, T in (('transit', T_pre), ('release', T_release)):
+        why = _in_workspace(cfg, float(T[0, 3]), float(T[1, 3]), float(T[2, 3]))
+        if why:
+            return '%s TCP pose %s' % (what, why)
+    return None
+
+
+def _xy_text(T) -> str:
+    return '(%.3f, %.3f)' % (float(T[0, 3]), float(T[1, 3]))
 
 
 def _segments_cross(p1, p2, q1, q2) -> bool:
@@ -168,30 +229,39 @@ def _referenced_zones(cfg) -> set:
     return used
 
 
-def _check_zones(cfg, rep: _Report, zones) -> None:
+def _check_zones(cfg, rep: _Report, zones, task: Optional[str] = None) -> None:
     poly = cfg.get('perception.roi.pick_polygon', None) or []
     margin = float(cfg.get('perception.roi.zone_exclude_margin', 0.02) or 0.0)
-    poses = _place_poses(cfg, zones)
+    poses = _place_poses(cfg, zones, task)
     for name, zone in zones.items():
         x, y = float(zone.center[0]), float(zone.center[1])
-        why = _in_workspace(cfg, x, y)
-        if why:
-            rep.fail('zone %s center outside the workspace: %s' % (name, why))
-            continue
-        for cx, cy in zone.corners_xy():
-            why = _in_workspace(cfg, float(cx), float(cy))
-            if why:
-                rep.warn('zone %s corner (%.3f, %.3f) outside the workspace: %s'
-                         % (name, cx, cy, why))
-                break
+        center_out = _in_workspace(cfg, x, y)
         p = poses.get(name)
         if isinstance(p, str):
-            rep.fail('zone %s: cannot plan the release: %s' % (name, p))
+            if center_out:
+                rep.fail('zone %s center outside the workspace: %s' % (name, center_out))
+            else:
+                rep.fail('zone %s: cannot plan the release: %s' % (name, p))
             continue
-        for what, T in (('transit', p[0]), ('release', p[1])):
-            why = _in_workspace(cfg, x, y, float(T[2, 3]))
-            if why:
-                rep.fail('zone %s %s TCP pose outside the workspace: %s' % (name, what, why))
+        inside = [c for c in p if _pose_outside(cfg, *c) is None]
+        if not inside:
+            if center_out:
+                rep.fail('zone %s center outside the workspace: %s' % (name, center_out))
+            else:
+                rep.fail('zone %s %s outside the workspace'
+                         % (name, _pose_outside(cfg, *p[0])))
+            continue
+        if inside[0] is not p[0]:
+            rep.warn('zone %s: releasing at the center is outside the workspace (%s); objects '
+                     'go to the near part of the card, first at %s'
+                     % (name, center_out or _pose_outside(cfg, *p[0]), _xy_text(inside[0][1])))
+        else:
+            for cx, cy in zone.corners_xy():
+                why = _in_workspace(cfg, float(cx), float(cy))
+                if why:
+                    rep.warn('zone %s corner (%.3f, %.3f) outside the workspace: %s'
+                             % (name, cx, cy, why))
+                    break
         if len(poly) >= 3 and _polygons_overlap(zone.corners_xy(margin), poly):
             rep.warn('zone %s grown by perception.roi.zone_exclude_margin (%.3f m) overlaps the '
                      'pick polygon: objects there are ignored (touches_zone)' % (name, margin))
@@ -486,26 +556,52 @@ def _check_camera(cfg, rep: _Report, camera, ext, arm) -> None:
         rep.fail(msg)
 
 
-def _check_reachable(cfg, rep: _Report, arm, zones) -> None:
-    targets = []
+def _reach(arm, T, max_tilt_deg: Optional[float] = None) -> Tuple[bool, float, str]:
+    """Return (reachable, tilt deg, why) of one TCP pose (task/reach.reach_adjust)."""
+    from .reach import reach_adjust
+    try:
+        T2, tilt, why = reach_adjust(arm, T, max_tilt_deg=max_tilt_deg)
+    except Exception as e:  # noqa: B902
+        T2, tilt, why = None, 0.0, 'reachability check raised: %s' % e
+    return T2 is not None, tilt, why
+
+
+def _check_reachable(cfg, rep: _Report, arm, zones, task: Optional[str] = None) -> None:
     if cfg.get('robot.poses.observe_joints', None) is None:
         T = observe_tcp_pose(cfg)
         if T is not None:
-            targets.append(('observe_tcp', T))
-    for name, p in _place_poses(cfg, zones).items():
-        if not isinstance(p, str):
-            targets.append(('zone %s transit' % name, p[0]))
-            targets.append(('zone %s release' % name, p[1]))
-    from .reach import reach_adjust
-    for what, T in targets:
-        try:
-            T2, tilt, why = reach_adjust(arm, T)
-        except Exception as e:  # noqa: B902
-            T2, tilt, why = None, 0.0, 'reachability check raised: %s' % e
-        if T2 is None:
-            rep.fail('%s not reachable (also with the tool leaned outward): %s' % (what, why))
-        elif tilt > 0:
-            rep.good('%s reachable with the tool leaned %.0f deg' % (what, tilt))
+            ok, tilt, why = _reach(arm, T)
+            if not ok:
+                rep.fail('observe_tcp not reachable (also with the tool leaned outward): %s'
+                         % why)
+            elif tilt > 0:
+                rep.good('observe_tcp reachable with the tool leaned %.0f deg' % tilt)
+    from .reach import free_tilt_limit
+    # Like task/runner: the transit is a free-space pose and may lean up to max_tilt_free_deg.
+    free = free_tilt_limit(arm, cfg)
+    for name, p in _place_poses(cfg, zones, task).items():
+        if isinstance(p, str):
+            continue
+        first = None
+        for k, (T_pre, T_rel) in enumerate(p):
+            if k > 0 and _pose_outside(cfg, T_pre, T_rel) is not None:
+                continue
+            res = [('transit',) + _reach(arm, T_pre, free), ('release',) + _reach(arm, T_rel)]
+            if first is None:
+                first = res
+            if all(r[1] for r in res):
+                where = '' if k == 0 else (' at %s (the center is out of reach)'
+                                           % _xy_text(T_rel))
+                tilt = max(r[2] for r in res)
+                if where or tilt > 0:
+                    rep.good('zone %s transit and release reachable%s with the tool leaned '
+                             '%.0f deg' % (name, where, tilt))
+                break
+        else:
+            for what, ok, _tilt, why in first or []:
+                if not ok:
+                    rep.fail('zone %s %s not reachable (also with the tool leaned outward): %s'
+                             % (name, what, why))
 
 
 def self_check(cfg, task: str, arm=None, camera=None, mode: str = 'real',
@@ -531,7 +627,7 @@ def self_check(cfg, task: str, arm=None, camera=None, mode: str = 'real',
     if not zones:
         rep.fail('no zones configured (teach_poses)')
     _check_task_config(cfg, task, rep, zones)
-    _check_zones(cfg, rep, zones)
+    _check_zones(cfg, rep, zones, task)
     _check_robot_config(cfg, rep, mode)
     if mode == 'real' and cfg.get('perception.table.expected_z', None) is None:
         rep.warn('perception.table.expected_z is not set: the grasp and safety floor follow the '
@@ -552,5 +648,5 @@ def self_check(cfg, task: str, arm=None, camera=None, mode: str = 'real',
         else:
             _check_camera(cfg, rep, camera, ext, arm)
     if arm is not None and hasattr(arm, 'check_reachable'):
-        _check_reachable(cfg, rep, arm, zones)
+        _check_reachable(cfg, rep, arm, zones, task)
     return not rep.failed, rep.messages
