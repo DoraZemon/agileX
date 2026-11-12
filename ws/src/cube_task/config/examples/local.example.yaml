@@ -5,7 +5,7 @@
 robot:
   can_channel: can0            # CAN 口名（bash scripts/can_up.sh 显示的名字）
   speed_percent: 30            # 默认速度 %；空跑和整轮通过后再提高
-  tcp_offset: [0.0, 0.0, 0.140, 0.0, 0.0, 0.0]   # 法兰 -> 闭合指尖中心 [x y z roll pitch yaw]，m / rad
+  tcp_offset: [0.0, 0.0, 0.1425, 0.0, 0.0, 0.0]   # 法兰 -> 闭合指尖中心 [x y z roll pitch yaw]，m / rad
   gripper:
     max_width: 0.070           # 标准夹爪 0.070；100 mm 新夹爪 0.100
 camera:

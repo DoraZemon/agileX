@@ -26,7 +26,7 @@ robot:
   enable_timeout_s: 5.0        # wait for all joints to report enabled
   # TCP (fingertip center when closed) in the flange frame [x y z roll pitch yaw].
   # SITE: measure flange face -> fingertip center along the flange z axis.
-  tcp_offset: [0.0, 0.0, 0.140, 0.0, 0.0, 0.0]
+  tcp_offset: [0.0, 0.0, 0.1425, 0.0, 0.0, 0.0]
   gripper:
     max_width: 0.100           # SITE: gripper stroke 100 mm (PIPER manual)
     open_margin: 0.020         # open to object width + margin before descending

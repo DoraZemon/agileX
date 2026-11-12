@@ -25,7 +25,7 @@ from cube_task.robot import pyagxarm_arm as mod
 from cube_task.robot.kinematics import PiperKinematics, tilt_outward
 
 KIN = PiperKinematics()
-T_FT = tf.pose6_to_T([0.0, 0.0, 0.14, 0.0, 0.0, 0.0])
+T_FT = tf.pose6_to_T([0.0, 0.0, 0.1425, 0.0, 0.0, 0.0])
 T_TF = tf.inv_T(T_FT)
 
 

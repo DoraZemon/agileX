@@ -13,7 +13,7 @@ from cube_task.core.config import load_config
 from cube_task.robot.kinematics import PiperKinematics
 from cube_task.robot.sim_arm import SimArm
 
-T_FT = tf.pose6_to_T([0.0, 0.0, 0.14, 0.0, 0.0, 0.0])
+T_FT = tf.pose6_to_T([0.0, 0.0, 0.1425, 0.0, 0.0, 0.0])
 
 
 class FakeWorld:

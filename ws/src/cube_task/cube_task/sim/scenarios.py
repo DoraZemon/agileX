@@ -42,7 +42,7 @@ PIPER_LIMITS = (
     (-1.745330, 1.745330), (-1.221730, 1.221730), (-2.967060, 2.967060),
 )
 # Same as config/default.yaml robot.tcp_offset (only used for info / reach checks).
-DEFAULT_TCP_OFFSET = (0.0, 0.0, 0.140, 0.0, 0.0, 0.0)
+DEFAULT_TCP_OFFSET = (0.0, 0.0, 0.1425, 0.0, 0.0, 0.0)
 GRIPPER_MAX_WIDTH = 0.100            # config robot.gripper.max_width (100 mm stroke)
 
 DEFAULT_PICK_POLYGON = [[0.15, -0.22], [0.45, -0.22], [0.45, 0.22], [0.15, 0.22]]
@@ -50,7 +50,7 @@ TASKS = ('L1', 'L2', 'L3')
 MOUNTS = ('eye_to_hand', 'eye_in_hand')
 DIFFICULTIES = ('normal', 'hard')
 MATERIALS = ('official', 'legacy')
-LAYOUTS = ('A', 'B')
+LAYOUTS = ('A', 'B', 'C')
 
 # Orbbec-like wide-FOV color camera.
 DEFAULT_INTRINSICS = dict(fx=380.0, fy=380.0, cx=319.5, cy=239.5, width=640, height=480)
@@ -487,6 +487,14 @@ OFFICIAL_LAYOUTS: Dict[str, Dict[str, Any]] = {
           'pick': [[0.12, -0.25], [0.40, -0.25], [0.40, 0.25], [0.12, 0.25]],
           'eye_to_hand': ((0.60, 0.0, 0.50), (0.36, 0.0, 0.0)),
           'eye_in_hand': (0.0, 0.486, -0.47, 0.0, 1.168, 0.0)},
+    # C: measured on the real table (11/12): 900 x 1200 mm, base 50 mm from the near edge.
+    # Yellow card 0.60 m straight ahead, red (+y, left) and green (-y, right) 0.30 m beside
+    # it (200 mm cards, 100 mm gaps). No fixed pick area: anything the arm reaches.
+    'C': {'cards': {'zone_red': (0.60, 0.30), 'zone_yellow': (0.60, 0.0),
+                    'zone_green': (0.60, -0.30)},
+          'pick': [[0.15, -0.30], [0.46, -0.30], [0.46, 0.30], [0.15, 0.30]],
+          'eye_to_hand': ((0.60, 0.0, 0.50), (0.36, 0.0, 0.0)),
+          'eye_in_hand': (0.0, 0.486, -0.47, 0.0, 1.168, 0.0)},
     # B: the three cards in a row in front of the pick area.
     'B': {'cards': {'zone_green': (0.43, 0.205), 'zone_yellow': (0.43, 0.0),
                     'zone_red': (0.43, -0.205)},
@@ -807,7 +815,7 @@ RELEASE_HEIGHT = 0.06
 RETREAT_HEIGHT = 0.10
 APPROACH_HEIGHT = 0.08
 CARD_CHECK_Z = RELEASE_HEIGHT + CUBE_EDGE / 2.0
-MAX_TILT_DEG = 30.0                  # config robot.workspace.max_tilt_from_down_deg
+MAX_TILT_DEG = 50.0                  # config robot.workspace.max_tilt_from_down_deg
 
 
 def official_zones(layout: str = 'A') -> List[SimZone]:
