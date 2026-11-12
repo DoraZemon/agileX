@@ -401,6 +401,7 @@ class GraspPlanner:
             closing = neutral
             expected = length
             kind = 'round'
+            closing = self._round_closing(det, closing, x, y, expected)
         else:
             closing = choose_closing_angle(float(det.yaw) + math.pi / 2.0, x, y, math.pi)
             # A partly hidden round cross-section (fruit lying on its side) makes the
@@ -554,6 +555,27 @@ class GraspPlanner:
         band = ((across <= FINGER_HALF_BAND) & (along >= expected / 2.0 + NEIGHBOR_CLEARANCE)
                 & (along <= open_w / 2.0 + FINGER_OUTER))
         return int(np.count_nonzero(band))
+
+    def _round_closing(self, det: Detection, neutral: float, x: float, y: float,
+                       expected: float) -> float:
+        """
+        Return the closing angle of a round object that keeps the fingers off neighbors.
+
+        Any angle grips a round object, so the neutral one is turned by 45 / 90 / 135 deg
+        only when that sweeps fewer neighbor points (finger_hits); ties keep neutral.
+        """
+        best_hits = self.finger_hits(det, neutral, x, y, expected)
+        best = neutral
+        if best_hits == 0:
+            return neutral
+        for k in (2, 1, 3):
+            alt = choose_closing_angle(neutral + k * math.pi / 4.0, x, y, math.pi)
+            hits = self.finger_hits(det, alt, x, y, expected)
+            if hits < best_hits:
+                best, best_hits = alt, hits
+                if hits == 0:
+                    break
+        return best
 
     def _avoid_neighbors(self, det: Detection, closing: float, x: float, y: float,
                          expected: float, alt_expected: float) -> Tuple[float, float]:

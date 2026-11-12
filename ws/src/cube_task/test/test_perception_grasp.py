@@ -155,3 +155,16 @@ def test_block_is_not_turned_onto_an_axis_too_wide_for_the_gripper():
     p = gp.plan(d)
     assert p.feasible and p.expected_width == pytest.approx(0.030)
     assert _axis_diff(p.closing_angle, 0.0) < 1e-9
+
+
+def test_round_fruit_turns_the_fingers_away_from_a_touching_neighbor():
+    gp = GraspPlanner(make_cfg(), 'L2')
+    x, y = 0.30, 0.05
+    free = gp.plan(make_det('pear', x, y, size=0.055, height=0.06))
+    a = free.closing_angle
+    d = make_det('pear', x, y, size=0.055, height=0.06)
+    d.extra['_neighbor_xy'] = _square(x + 0.05 * math.cos(a), y + 0.05 * math.sin(a), 0.035)
+    p = gp.plan(d)
+    assert p.feasible
+    assert gp.finger_hits(d, free.closing_angle, x, y, free.expected_width) > 0
+    assert gp.finger_hits(d, p.closing_angle, x, y, p.expected_width) == 0
